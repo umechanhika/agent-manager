@@ -105,9 +105,16 @@ final class SessionStore: ObservableObject {
     private var quitTimer: Timer?
 
     init() {
-        dir = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/agent-manager/sessions", isDirectory: true)
+        // 開発時の検証用に監視ディレクトリを差し替えられるようにする。
+        // 本番 AgentManager と dev ビルドが同じディレクトリへ二重反応する事故を防ぐ。
+        if let override = ProcessInfo.processInfo.environment["AGENT_MANAGER_SESSIONS_DIR"],
+           !override.isEmpty {
+            dir = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            dir = FileManager.default
+                .homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/agent-manager/sessions", isDirectory: true)
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         startWatching()
         // 起動直後はフックの JSON 書き込み競合で reload が 0件→N件 と往復し、ウィンドウ高さが
