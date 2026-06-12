@@ -17,6 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = SessionStore()
     /// メニューバー常駐（ステータス別件数の表示／窓の表示トグル）。
     private var statusBar: StatusBarController?
+    /// 箱庭シミュレーション（8Hz tick）。パネル非表示時は止めて CPU を使わない。
+    private var simulation: CatSimulation?
+    #if DEBUG
+    /// 検証用スナップショット（SIGUSR1）/ 状態ダンプ（SIGUSR2）のシグナルソース保持。
+    private var snapshotSignalSource: DispatchSourceSignal?
+    private var stateSignalSource: DispatchSourceSignal?
+    #endif
 
     /// 上端固定リサイズの基準（窓の上端 y = frame.maxY）。中身追従で高さが変わっても
     /// この上端を保つよう origin.y を詰め直し、左下原点リサイズによる上下動を防ぐ。
@@ -29,11 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 全セッションが終了したらアプリ自体を終了する。
         // 次回の SessionStart フックでまた起動するため、常駐し続ける必要はない。
         store.onAllSessionsEnded = { NSApp.terminate(nil) }
-        let hosting = ClickThroughHostingView(rootView: ContentView(store: store))
+        let simulation = CatSimulation()
+        simulation.onWaitingEdge = { MeowPlayer.shared.meow() }
+        simulation.bind(to: store)
+        self.simulation = simulation
+        let hosting = ClickThroughHostingView(rootView: SandboxView(store: store, simulation: simulation))
         hosting.translatesAutoresizingMaskIntoConstraints = false
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 220, height: 120),
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
             styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -56,10 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
 
         panel.contentView = hosting
-        // レイアウトを確定させてから内容に合うサイズへ（起動直後は fittingSize が 0 になりうる）。
-        hosting.layoutSubtreeIfNeeded()
-        var size = hosting.fittingSize
-        if size.width < 50 || size.height < 30 { size = NSSize(width: 230, height: 120) }
+        // 箱庭ビューは固定サイズ（論理シーン 160x110 の 2x）。fittingSize 追従は不要。
+        let size = NSSize(width: 320, height: 220)
         panel.setContentSize(size)
 
         // 右上あたりに初期配置。
@@ -81,6 +90,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(panelDidMove(_:)),
             name: NSWindow.didMoveNotification, object: panel)
+        // パネルの可視状態（orderOut/最小化/被覆）に連動してシミュレーションを止める。
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(panelOcclusionChanged(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification, object: panel)
+        // 初期表示は waiting 連動なので、表示されるまで tick を止めておく。
+        simulation.setPaused(true)
+
+        #if DEBUG
+        // 検証用: SIGUSR1 で窓の中身を /tmp/agent-manager-snap.png に書き出す。
+        // 自プロセスの view 描画なので画面収録の TCC 権限が不要（screencapture の代替）。
+        signal(SIGUSR1, SIG_IGN)
+        let snapSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        snapSource.setEventHandler { [weak self] in
+            guard let view = self?.panel?.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            if let data = rep.representation(using: .png, properties: [:]) {
+                try? data.write(to: URL(fileURLWithPath: "/tmp/agent-manager-snap.png"))
+            }
+        }
+        snapSource.resume()
+        self.snapshotSignalSource = snapSource
+
+        // 検証用: SIGUSR2 でシミュレーション内部状態を /tmp/agent-manager-state.txt に書き出す。
+        signal(SIGUSR2, SIG_IGN)
+        let stateSource = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        stateSource.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            var text = self.simulation?.debugDump() ?? "(no simulation)"
+            text += "\nstore: " + self.store.sessions
+                .map { "\($0.session_id)=\($0.state)" }.joined(separator: " ")
+            try? text.write(toFile: "/tmp/agent-manager-state.txt", atomically: true, encoding: .utf8)
+        }
+        stateSource.resume()
+        self.stateSignalSource = stateSource
+        #endif
 
         // メニューバー常駐を起動。窓の表示/非表示はクロージャ経由で AppDelegate に委ねる。
         let sb = StatusBarController(store: store)
@@ -115,6 +160,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func panelDidMove(_ note: Notification) {
         guard let panel = panel, !isAdjustingFrame else { return }
         anchorTopY = panel.frame.maxY
+    }
+
+    /// パネルが見えなくなったら（orderOut / 最小化 / 完全被覆）tick を止め、
+    /// 再び見えたら再開する。floating レベルなので実質 orderOut/最小化の検出器として働く。
+    @objc private func panelOcclusionChanged(_ note: Notification) {
+        guard let panel = panel else { return }
+        simulation?.setPaused(!panel.occlusionState.contains(.visible))
     }
 
     /// Dock アイコンのクリックで（閉じた/最小化した後も、メニューバーで非表示にした後も）小窓を再表示する。

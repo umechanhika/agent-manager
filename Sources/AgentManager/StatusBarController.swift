@@ -34,6 +34,8 @@ final class StatusBarController {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(statusItemClicked(_:))
+            // 右クリックも受け取る（ミュート切替メニュー用）。左クリックは従来の前面化のまま。
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         // sessions の変化を購読して、ウィンドウの表示制御（waiting 連動）とメニューバー描画を更新する。
         // （ContentView の @ObservedObject と同じデータ源。書き込む状態が別なので順序非依存。）
@@ -54,10 +56,36 @@ final class StatusBarController {
 
     // MARK: - 表示状態の制御
 
-    /// メニューバーアイコンのクリック。表示/非表示トグルは廃止し、前面化のみ行う。
-    /// （隠すのはウィンドウの最小化/閉じる、または waiting 全解消による自動非表示で行う。）
+    /// メニューバーアイコンのクリック。
+    /// 左: 前面化のみ（表示/非表示トグルは廃止。隠すのは最小化/閉じる/自動非表示で行う）。
+    /// 右: ミュート切替メニューをポップアップ。
     @objc private func statusItemClicked(_ sender: Any?) {
-        setWindowVisible?(true)
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            popUpContextMenu()
+        } else {
+            setWindowVisible?(true)
+        }
+    }
+
+    /// 右クリックメニュー。statusItem.menu を恒久セットすると左クリックまでメニューに
+    /// 吸われて前面化が死ぬため、表示の瞬間だけ一時セットして外す。
+    private func popUpContextMenu() {
+        let menu = NSMenu()
+        let mute = NSMenuItem(title: "鳴き声をミュート",
+                              action: #selector(toggleMute(_:)), keyEquivalent: "")
+        mute.target = self
+        mute.state = MeowPlayer.shared.isMuted ? .on : .off
+        menu.addItem(mute)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "AgentManager を終了",
+                     action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func toggleMute(_ sender: Any?) {
+        MeowPlayer.shared.isMuted.toggle()
     }
 
     /// Dock アイコンのクリック等からの確実な前面化口。
