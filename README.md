@@ -2,7 +2,7 @@
 
 複数の Claude Code セッションの状態（🟡確認待ち / 🟢応答完了 / 🔵処理中 / ⚪待機）を、**常時最前面・全 Space 表示の小さなフローティングウィンドウ**で一覧するツール。行をクリックすると該当セッションのターミナル（iTerm2 / Android Studio 等）へジャンプする。
 
-dotfiles の一部として `~/dotfiles/agent-manager/` で管理する（ビルド成果物 `.build/` は gitignore）。
+ビルド成果物 `.build/` は gitignore。
 
 ## 仕組み
 
@@ -20,7 +20,7 @@ hooks/agent-manager-hook.sh ──▶ ~/.claude/agent-manager/sessions/<session_
                     iTerm2: 該当ペインを選択 / Android Studio等: 該当ウィンドウを前面化
 ```
 
-- hook と Swift アプリはファイル経由でのみ連携する疎結合構成。状態ファイル（`~/.claude/agent-manager/sessions/`）はマシンローカルで dotfiles には含めない。
+- hook と Swift アプリはファイル経由でのみ連携する疎結合構成。状態ファイル（`~/.claude/agent-manager/sessions/`）はマシンローカル（リポジトリには含めない）。
 - 各セッションのホストアプリは hook が**プロセスツリーを遡って、ターミナルを内包する最も近い `.app` の bundle id**を解決して判定（iTerm2 / Android Studio 等）。`__CFBundleIdentifier` / `ITERM_SESSION_ID` は当てにしない（Android Studio を iTerm2 から `studio .` で起動すると、AS の統合ターミナル子プロセスがこれらに iTerm2 の値を継承してしまい誤判定するため）。`iterm_session_id` は host が iTerm2 と確定したときだけ記録する。
 - 状態検知は Claude Code の hooks。マッピングは `hooks/agent-manager-hook.sh` の `STATE_BY_EVENT` で調整可能（例: `Stop` を `waiting` にすると応答完了を「確認待ち」扱いにできる）。
 - アプリの起動は `SessionStart` フックの `agent-manager-launch.sh` が担う。未起動なら（必要に応じて release ビルドして）起動し、起動済みなら何もしない。セッション開始を遅延させないよう重い処理はバックグラウンドに逃がす。
@@ -28,42 +28,56 @@ hooks/agent-manager-hook.sh ──▶ ~/.claude/agent-manager/sessions/<session_
 
 ## セットアップ
 
-### 新規クローン時の流れ（推奨）
+### セットアップの流れ
 
 ```
-1. git clone <dotfiles> ~/dotfiles
-2. sh ~/dotfiles/.bin/install.sh
-     - settings.json / skills をシンボリックリンク（→ フック有効化）
-     - scripts/create-signing-cert.sh で署名証明書を作成して信頼設定
-       （信頼設定の認証ダイアログ＋キーチェーンPW入力あり。通常ターミナルで実行）
-     - scripts/build-app.sh で署名済み .app をビルド
-3. 新規 Claude Code セッションを開始
+1. git clone https://github.com/umechanhika/agent-manager.git ~/agent-manager
+2. bash ~/agent-manager/scripts/create-signing-cert.sh   # 署名証明書の作成（初回のみ・対話あり）
+3. bash ~/agent-manager/scripts/build-app.sh             # 署名済み .app をビルド
+4. ~/.claude/settings.json に hooks を登録（下記参照）
+5. 新規 Claude Code セッションを開始
      - SessionStart フックで launch.sh が署名済み .app を起動
-4. 初回フォーカス時のみ権限付与（下記「権限」を参照）
+6. 初回フォーカス時のみ権限付与（下記「権限」を参照）
      - iTerm2: 許可ダイアログで「許可」
      - Android Studio: システム設定 > アクセシビリティ で AgentManager を手動ON
 ```
 
-`install.sh` が上記 2 を全部やる。証明書作成（手順 2 の対話）以外は手動操作不要。
 **証明書を作らずに `.app` をビルドしようとすると署名IDが無く失敗する**ので、
-クローン時は必ず `install.sh`（または `create-signing-cert.sh`）を先に通すこと。
+手順 2 を必ず先に通すこと。
 
-以降の各手順を手動でやる場合は次の通り。
+### 1. hooks の登録
 
-### 1. hooks（dotfiles 管理済み）
+`~/.claude/settings.json`（または symlink 元の settings.json）の `hooks` セクションに以下を追加する。
 
-hooks は `~/dotfiles/.config/.claude/settings.json`（`~/.claude/settings.json` へ install.sh が
-シンボリックリンク）に登録済みなので、新環境でもそのまま有効。各 hook イベントが
-`agent-manager-hook.sh`（状態書き込み）を、`SessionStart` は加えて `agent-manager-launch.sh`
-（アプリ起動）を呼ぶ。
+```json
+"hooks": {
+  "SessionStart": [
+    { "hooks": [
+      { "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" },
+      { "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-launch.sh" }
+    ]}
+  ],
+  "UserPromptSubmit": [
+    { "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}
+  ],
+  "PreToolUse":  [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}],
+  "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}],
+  "Notification": [{ "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}],
+  "Stop":        [{ "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}],
+  "SessionEnd":  [{ "hooks": [{ "type": "command", "command": "$HOME/agent-manager/hooks/agent-manager-hook.sh" }]}]
+}
+```
+
+各 hook イベントが `agent-manager-hook.sh`（状態書き込み）を、`SessionStart` は加えて
+`agent-manager-launch.sh`（アプリ起動）を呼ぶ。
 
 依存: `python3`（macOS 標準の `/usr/bin/python3` でOK）。`jq` は不要。
 
 ### 2. 署名証明書の作成 → ビルド（初回のみ。以降は launcher が必要時に自動ビルド）
 
 ```sh
-bash ~/dotfiles/agent-manager/scripts/create-signing-cert.sh   # 署名IDを作成（初回のみ・冪等）
-bash ~/dotfiles/agent-manager/scripts/build-app.sh             # 署名済み .app を生成
+bash ~/agent-manager/scripts/create-signing-cert.sh   # 署名IDを作成（初回のみ・冪等）
+bash ~/agent-manager/scripts/build-app.sh             # 署名済み .app を生成
 ```
 
 `build-app.sh` は安定した名前付き ID（`AgentManager Code Signing`）で署名する。
@@ -77,9 +91,9 @@ bash ~/dotfiles/agent-manager/scripts/build-app.sh             # 署名済み .a
 手動起動する場合:
 
 ```sh
-~/dotfiles/agent-manager/hooks/agent-manager-launch.sh      # 未起動 or 古ければ build して起動（冪等）
+~/agent-manager/hooks/agent-manager-launch.sh      # 未起動 or 古ければ build して起動（冪等）
 # または直接 .app を:
-/usr/bin/open ~/dotfiles/agent-manager/.build/AgentManager.app
+/usr/bin/open ~/agent-manager/.build/AgentManager.app
 ```
 
 #### pull した新コードを即時反映したいとき
@@ -90,8 +104,8 @@ bash ~/dotfiles/agent-manager/scripts/build-app.sh             # 署名済み .a
 
 ```sh
 pkill -f "AgentManager.app/Contents/MacOS/AgentManager"   # 起動中の古いアプリを終了
-bash ~/dotfiles/agent-manager/scripts/build-app.sh         # 最新ソースから .app を作り直す
-/usr/bin/open -g ~/dotfiles/agent-manager/.build/AgentManager.app   # 起動
+bash ~/agent-manager/scripts/build-app.sh         # 最新ソースから .app を作り直す
+/usr/bin/open -g ~/agent-manager/.build/AgentManager.app   # 起動
 ```
 
 Dock には出ず（`.accessory`）、画面右上に小窓が常駐する。ウィンドウは背景ドラッグで移動可能。
