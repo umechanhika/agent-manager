@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${HOME}/dotfiles/agent-manager"
+PROJECT_DIR="${HOME}/agent-manager"
 APP="${PROJECT_DIR}/.build/AgentManager.app"
 APP_BIN="${APP}/Contents/MacOS/AgentManager"
 

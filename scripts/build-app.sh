@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${HOME}/dotfiles/agent-manager"
+PROJECT_DIR="${HOME}/agent-manager"
 SWIFT="/usr/bin/swift"
 BIN="${PROJECT_DIR}/.build/release/AgentManager"
 APP="${PROJECT_DIR}/.build/AgentManager.app"
