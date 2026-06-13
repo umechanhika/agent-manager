@@ -26,6 +26,10 @@ struct Session: Identifiable, Decodable {
         case done        // 応答完了
         case processing  // 処理中
         case idle        // 待機（開始直後/未知の state も含む）
+
+        /// 表示順：done(緑) → processing(青) → waiting(黄) → idle(灰)。
+        /// メニューバー・ヘッダー・壁の掲示板で同じ並びを共有する。
+        static let displayOrder: [StatusCategory] = [.done, .processing, .waiting, .idle]
     }
 
     /// `state` 文字列をカテゴリへ写す。未知の state は `.idle` 扱い。

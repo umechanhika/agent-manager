@@ -6,35 +6,72 @@ import Foundation
 /// 描画用スナップショットを publish する。レンダリングは SandboxView(Canvas) が担当。
 final class CatSimulation: ObservableObject {
 
-    // MARK: - シーン定数（論理ピクセル 160x110。描画は 2x）
+    // MARK: - シーン配置（論理ピクセル。描画は 2x。論理サイズは可変）
 
-    enum Scene {
-        static let width: CGFloat = 160
-        static let height: CGFloat = 110
-        static let wallBottom: CGFloat = 55     // 壁(と窓) y0–55 / 床 y55–110
-        static let minX: CGFloat = 10, maxX: CGFloat = 128  // 右端はキャットタワー占有域を避ける
-        static let minY: CGFloat = 58, maxY: CGFloat = 94   // 猫の可動域
-        static let yarnHome = CGPoint(x: 80, y: 80)
-        /// waiting の猫が集まる前列中央帯。
-        static let frontY: CGFloat = 88
-        static let frontCenterX: CGFloat = 80
-
-        /// 寝床スポット。歩いて行く位置と寝る位置を分ける
-        /// （キャットタワーは麓まで歩いてから天板へ跳び乗る）。
-        struct SleepSpot {
-            let walkTo: CGPoint
-            let sleepAt: CGPoint
-        }
-        static let sleepSpots: [SleepSpot] = [
-            SleepSpot(walkTo: CGPoint(x: 26, y: 86), sleepAt: CGPoint(x: 26, y: 84)),    // 青クッション
-            SleepSpot(walkTo: CGPoint(x: 114, y: 91), sleepAt: CGPoint(x: 114, y: 89)),  // 赤クッション
-            SleepSpot(walkTo: CGPoint(x: 146, y: 84), sleepAt: CGPoint(x: 144, y: 48)),  // タワー天板
-        ]
-        /// キャットタワーの描画位置（左上・論理px）。
-        static let towerTopLeft = CGPoint(x: 134, y: 52)
-        /// 観葉植物の描画位置。
-        static let plantTopLeft = CGPoint(x: 4, y: 44)
+    /// 寝床スポット。歩いて行く位置と寝る位置を分ける
+    /// （キャットタワーは麓まで歩いてから天板へ跳び乗る）。
+    struct SleepSpot: Equatable {
+        let walkTo: CGPoint
+        let sleepAt: CGPoint
     }
+
+    /// 論理シーンサイズから全ジオメトリを導出する。ウィンドウのリサイズで
+    /// width/height が変わると家具は壁際にアンカーしたまま床・窓・掲示板が広がる。
+    /// スプライト自体は固定サイズなので倍率は常に 2x（ピクセルパーフェクト維持）。
+    struct RoomLayout: Equatable {
+        let width: CGFloat
+        let height: CGFloat
+        let wallBottom: CGFloat        // 壁(と窓・掲示板) 0–wallBottom / 床 wallBottom–height
+        let minX, maxX, minY, maxY: CGFloat  // 猫の可動域
+        let yarnHome: CGPoint
+        let frontY: CGFloat            // waiting の猫が集まる前列中央帯
+        let frontCenterX: CGFloat
+        let sleepSpots: [SleepSpot]
+        let towerTopLeft: CGPoint      // キャットタワー描画位置（左上）
+        let plantTopLeft: CGPoint      // 観葉植物描画位置（左上）
+        let windowRect: CGRect         // 窓（枠の外形）
+        let boardRect: CGRect          // 左壁のセッション掲示板
+        let rugRect: CGRect            // 床中央のラグ
+
+        init(width: CGFloat, height: CGFloat) {
+            self.width = width
+            self.height = height
+            let wb = (height * 0.5).rounded()
+            self.wallBottom = wb
+
+            // 壁の造作: 左に掲示板、右寄りに窓。ヘッダー帯(論理 ~7px)より下から始める。
+            self.boardRect = CGRect(x: 4, y: 10, width: 52, height: wb - 23)
+            // 窓は x62 から右端手前(width-28)まで。幅が広いほどガラスが伸びる。
+            let winX: CGFloat = 62
+            self.windowRect = CGRect(x: winX, y: 10, width: max(40, width - 28 - winX),
+                                     height: wb - 19)
+            // タワーは床に立つ（高さ可変でも床底にアンカー）。植物は掲示板の真下。
+            self.towerTopLeft = CGPoint(x: width - 26, y: height - 42)
+            self.plantTopLeft = CGPoint(x: 4, y: wb - 11)
+
+            // 猫の可動域（床バンド内・右端はタワー占有域を避ける）。
+            self.minX = 10
+            self.maxX = width - 32
+            self.minY = wb + 3
+            self.maxY = height - 16
+            self.frontCenterX = width / 2
+            self.frontY = height - 22
+            self.yarnHome = CGPoint(x: width / 2, y: wb + (height - wb) * 0.45)
+            self.rugRect = CGRect(x: width / 2 - 30, y: wb + 17, width: 60, height: 26)
+
+            self.sleepSpots = [
+                SleepSpot(walkTo: CGPoint(x: 26, y: height - 24),
+                          sleepAt: CGPoint(x: 26, y: height - 26)),          // 青クッション(左床)
+                SleepSpot(walkTo: CGPoint(x: width - 46, y: height - 19),
+                          sleepAt: CGPoint(x: width - 46, y: height - 21)),  // 赤クッション(右床)
+                SleepSpot(walkTo: CGPoint(x: width - 14, y: height - 26),
+                          sleepAt: CGPoint(x: width - 16, y: height - 46)),  // タワー天板
+            ]
+        }
+    }
+
+    /// 最小ウィンドウ（320x220pt）に対応する論理サイズ。
+    static let minLogical = CGSize(width: 160, height: 110)
 
     // MARK: - スナップショット（描画用・イミュータブル）
 
@@ -54,12 +91,16 @@ final class CatSimulation: ObservableObject {
 
     struct Snapshot: Equatable {
         var cats: [CatSnapshot] = []     // y 昇順（奥→手前の描画順）
-        var yarnPos: CGPoint = Scene.yarnHome
+        var layout = CatSimulation.defaultLayout   // 部屋の配置（リサイズで変化）
+        var yarnPos: CGPoint = CatSimulation.defaultLayout.yarnHome
         var yarnFrame: Int = 0
         /// 星のまたたき用。8Hz だと毎 tick snapshot が変わって再描画され続けるので
         /// 1/4 に量子化する（静止シーンでは publish 自体をスキップして CPU を抑える）。
         var twinkle: Int = 0
     }
+
+    /// 既定の論理シーン（最小ウィンドウ相当）。
+    static let defaultLayout = RoomLayout(width: minLogical.width, height: minLogical.height)
 
     @Published private(set) var snapshot = Snapshot()
 
@@ -115,7 +156,10 @@ final class CatSimulation: ObservableObject {
     private var timer: Timer?
     private var cancellables = Set<AnyCancellable>()
 
-    private var yarnPos = Scene.yarnHome
+    /// 現在の部屋の配置。ウィンドウのリサイズに追従して再計算される。
+    private(set) var layout = CatSimulation.defaultLayout
+
+    private var yarnPos = CatSimulation.defaultLayout.yarnHome
     private var yarnVel = CGVector(dx: 0, dy: 0)
     private var yarnRoll: CGFloat = 0   // 転がり量の累積（糸筋フレームの切替に使う）
 
@@ -153,6 +197,38 @@ final class CatSimulation: ObservableObject {
         hoveredID = sessionID
     }
 
+    /// ウィンドウのリサイズに追従して部屋の論理サイズを更新する。
+    /// 倍率は常に 2x 固定なので 論理 = floor(pt / 2)。サイズが変わったときだけ
+    /// 部屋を作り直し、猫・毛糸・寝床を新しい配置へ順応させる。
+    func setSceneSize(_ pt: CGSize) {
+        let w = max(CatSimulation.minLogical.width, (pt.width / 2).rounded(.down))
+        let h = max(CatSimulation.minLogical.height, (pt.height / 2).rounded(.down))
+        guard w != layout.width || h != layout.height else { return }
+        layout = RoomLayout(width: w, height: h)
+
+        // 毛糸玉を新しい床へ収める。
+        yarnPos.x = min(max(yarnPos.x, 14), layout.width - 14)
+        yarnPos.y = min(max(yarnPos.y, layout.wallBottom + 9), layout.maxY)
+
+        // 各猫を新可動域へ順応させる。歩行/寝床/前列は目的地を作り直す。
+        for cat in cats.values {
+            switch cat.activity {
+            case .sleeping:
+                // 寝ている猫は新しい寝床定位置へ瞬間移動（歩き直させない）。
+                if let bed = cat.bedIndex { cat.pos = layout.sleepSpots[bed].sleepAt }
+            case .walking where cat.category == .idle:
+                headToBed(cat)   // 寝床へ向かう途中なら新しい walkTo へ張り直す
+            case .walking(let target, let goal):
+                cat.pos = clampToField(cat.pos)
+                cat.activity = .walking(to: clampToField(target), then: goal)
+            default:
+                cat.pos = clampToField(cat.pos)
+            }
+        }
+        retargetWaiting()
+        publish()
+    }
+
     private func startTimer() {
         guard timer == nil else { return }
         // scheduledTimer は .default のみ登録で窓ドラッグ中に止まるため、
@@ -188,9 +264,12 @@ final class CatSimulation: ObservableObject {
     /// 新規セッション: ハッシュ由来のホーム位置へ画面端から歩いて入場する。
     private func spawn(_ session: Session) {
         let hash = SpriteRenderer.fnv1a(session.id)
-        let homeX = 18 + CGFloat(hash % 109)                  // 18...126（タワー占有域を避ける）
-        let homeY = Scene.minY + CGFloat((hash >> 16) % 36)   // 58...94
-        let entryX: CGFloat = homeX < Scene.frontCenterX ? -10 : Scene.width + 10
+        // 可動域内のハッシュ由来ホーム位置（タワー占有域は maxX で避け済み）。
+        let spanX = max(1, Int(layout.maxX - layout.minX))
+        let spanY = max(1, Int(layout.maxY - layout.minY))
+        let homeX = layout.minX + CGFloat(hash % UInt64(spanX))
+        let homeY = layout.minY + CGFloat((hash >> 16) % UInt64(spanY))
+        let entryX: CGFloat = homeX < layout.frontCenterX ? -10 : layout.width + 10
         let cat = Cat(sessionID: session.id, pos: CGPoint(x: entryX, y: homeY))
         cat.label = session.label
         cat.activity = .walking(to: CGPoint(x: homeX, y: homeY), then: .rest)
@@ -214,9 +293,9 @@ final class CatSimulation: ObservableObject {
             if case .walking(let target, _) = cat.activity {
                 // 入場ウォーク中なら行き先まで歩き切ってから座る（画面外で座り込まない）。
                 cat.activity = .walking(to: target, then: .rest)
-            } else if abs(cat.pos.x - Scene.frontCenterX) < 30 && cat.pos.y > 82 {
+            } else if abs(cat.pos.x - layout.frontCenterX) < 30 && cat.pos.y > layout.maxY - 12 {
                 // 前列スロット帯に居座ると次の waiting 猫と完全に重なるので、少し脇へ避けてから座る。
-                let aside: CGFloat = cat.pos.x < Scene.frontCenterX ? -1 : 1
+                let aside: CGFloat = cat.pos.x < layout.frontCenterX ? -1 : 1
                 let target = clampToField(CGPoint(x: cat.pos.x + aside * CGFloat(randInt(cat, 18...30)),
                                                   y: cat.pos.y - CGFloat(randInt(cat, 4...12))))
                 cat.activity = .walking(to: target, then: .rest)
@@ -304,7 +383,7 @@ final class CatSimulation: ObservableObject {
         case .sleep:
             if let bed = cat.bedIndex {
                 // 寝床の定位置に収まる（タワーは麓から天板へ跳び乗る）。
-                cat.pos = Scene.sleepSpots[bed].sleepAt
+                cat.pos = layout.sleepSpots[bed].sleepAt
             }
             cat.activity = .sleeping
             cat.emote = .zzz
@@ -320,14 +399,14 @@ final class CatSimulation: ObservableObject {
 
     private func headToBed(_ cat: Cat) {
         if cat.bedIndex == nil {
-            for (i, _) in Scene.sleepSpots.enumerated() where bedOwners[i] == nil {
+            for (i, _) in layout.sleepSpots.enumerated() where bedOwners[i] == nil {
                 bedOwners[i] = cat.sessionID
                 cat.bedIndex = i
                 break
             }
         }
         if let i = cat.bedIndex {
-            let target = Scene.sleepSpots[i].walkTo
+            let target = layout.sleepSpots[i].walkTo
             if distance(cat.pos, target) < 1 {
                 arrive(cat, .sleep)
             } else {
@@ -352,7 +431,7 @@ final class CatSimulation: ObservableObject {
             .sorted { $0.sessionID < $1.sessionID }
         for (i, cat) in waiting.enumerated() {
             let offset = CGFloat((i + 1) / 2 * 14) * (i % 2 == 0 ? 1 : -1)
-            let slot = clampToField(CGPoint(x: Scene.frontCenterX + offset, y: Scene.frontY))
+            let slot = clampToField(CGPoint(x: layout.frontCenterX + offset, y: layout.frontY))
             if distance(cat.pos, slot) < 1 {
                 if case .meowing = cat.activity {} else { cat.activity = .meowing }
             } else {
@@ -382,8 +461,8 @@ final class CatSimulation: ObservableObject {
 
     private func randomPoint(_ cat: Cat) -> CGPoint {
         CGPoint(
-            x: CGFloat(randInt(cat, Int(Scene.minX)...Int(Scene.maxX))),
-            y: CGFloat(randInt(cat, Int(Scene.minY)...Int(Scene.maxY)))
+            x: CGFloat(randInt(cat, Int(layout.minX)...Int(layout.maxX))),
+            y: CGFloat(randInt(cat, Int(layout.minY)...Int(layout.maxY)))
         )
     }
 
@@ -393,8 +472,8 @@ final class CatSimulation: ObservableObject {
     }
 
     private func clampToField(_ p: CGPoint) -> CGPoint {
-        CGPoint(x: min(max(p.x, Scene.minX), Scene.maxX),
-                y: min(max(p.y, Scene.minY), Scene.maxY))
+        CGPoint(x: min(max(p.x, layout.minX), layout.maxX),
+                y: min(max(p.y, layout.minY), layout.maxY))
     }
 
     /// じゃれている猫が周期的に毛糸玉を突く。
@@ -411,8 +490,8 @@ final class CatSimulation: ObservableObject {
         yarnPos.y += yarnVel.dy
         yarnRoll += abs(yarnVel.dx) + abs(yarnVel.dy)
         // 床バンド内にクランプ。
-        yarnPos.x = min(max(yarnPos.x, 14), Scene.width - 14)
-        yarnPos.y = min(max(yarnPos.y, Scene.wallBottom + 9), Scene.maxY)
+        yarnPos.x = min(max(yarnPos.x, 14), layout.width - 14)
+        yarnPos.y = min(max(yarnPos.y, layout.wallBottom + 9), layout.maxY)
         yarnVel.dx *= 0.8
         yarnVel.dy *= 0.8
     }
@@ -429,6 +508,7 @@ final class CatSimulation: ObservableObject {
         }
         let next = Snapshot(
             cats: sorted.map { snap($0) },
+            layout: layout,
             yarnPos: yarnPos,
             yarnFrame: Int(yarnRoll / 4) % SpriteData.yarn.count,
             twinkle: tickCount / 4
