@@ -21,9 +21,12 @@ final class StatusBarController {
 
     /// AppDelegate が panel を出し入れするためのクロージャ。
     var setWindowVisible: ((Bool) -> Void)?
+    /// 現在パネルが表示されているか問い合わせるクロージャ（左クリックのトグル判定用）。
+    var isWindowVisible: (() -> Bool)?
 
     /// メニューバーでの表示順：done(緑) → processing(青) → waiting(黄) → idle(灰)。
-    private static let displayOrder: [Session.StatusCategory] = [.done, .processing, .waiting, .idle]
+    /// ヘッダー・掲示板と共有するため Session.StatusCategory 側に集約済み。
+    private static let displayOrder = Session.StatusCategory.displayOrder
 
     /// メニューバーのアイコン(SF Symbol)とテキストで共有する基準サイズ。
     /// システム標準サイズ(≈13pt)。小さめにしたい/大きくしたい場合はここだけ変える。
@@ -57,13 +60,13 @@ final class StatusBarController {
     // MARK: - 表示状態の制御
 
     /// メニューバーアイコンのクリック。
-    /// 左: 前面化のみ（表示/非表示トグルは廃止。隠すのは最小化/閉じる/自動非表示で行う）。
+    /// 左: 表示/非表示のトグル（表示中なら隠す、非表示なら出す）。
     /// 右: ミュート切替メニューをポップアップ。
     @objc private func statusItemClicked(_ sender: Any?) {
         if NSApp.currentEvent?.type == .rightMouseUp {
             popUpContextMenu()
         } else {
-            setWindowVisible?(true)
+            setWindowVisible?(!(isWindowVisible?() ?? false))
         }
     }
 

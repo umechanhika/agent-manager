@@ -45,12 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
-            styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable],
+            styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        // 標準タイトルバーに "AgentManager" を表示。トラフィックライト（赤=閉じる/黄=最小化）は左上。
-        // 緑(zoom)はリサイズ不可なので自動的にグレーアウトする。
+        // 標準タイトルバーに "AgentManager" を表示。トラフィックライト（赤=閉じる/黄=最小化/緑=zoom）は左上。
         // ※ fullSizeContentView は使わない（コンテンツ高さにタイトルバーが上乗せされ上部が分厚くなるため）。
         panel.title = "AgentManager"
         panel.titleVisibility = .visible
@@ -67,15 +66,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
 
         panel.contentView = hosting
-        // 箱庭ビューは固定サイズ（論理シーン 160x110 の 2x）。fittingSize 追従は不要。
-        let size = NSSize(width: 320, height: 220)
-        panel.setContentSize(size)
+        // 箱庭ビューはリサイズ可能。倍率は常に 2x 固定なので論理 px が整数になるよう
+        // 2pt 刻みでリサイズさせ、最小は論理 160x110（= 320x220pt）。
+        panel.contentMinSize = NSSize(width: 320, height: 220)
+        panel.contentResizeIncrements = NSSize(width: 2, height: 2)
+        panel.setFrameAutosaveName("AgentManagerPanel")
 
-        // 右上あたりに初期配置。
-        if let screen = NSScreen.main {
-            let f = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 20, y: f.maxY - size.height - 20))
+        // 検証用の固定サイズ指定（拡大状態の再現）。指定があればフレーム復元より優先する。
+        var debugSize: NSSize?
+        #if DEBUG
+        if let spec = ProcessInfo.processInfo.environment["AGENT_MANAGER_SIZE"] {
+            let parts = spec.split(separator: "x").compactMap { Int($0) }
+            if parts.count == 2 {
+                debugSize = NSSize(width: max(320, parts[0] - parts[0] % 2),
+                                   height: max(220, parts[1] - parts[1] % 2))
+            }
         }
+        #endif
+
+        // サイズを確定してから右上に配置する（先に配置すると後のリサイズで画面外へはみ出す）。
+        if let ds = debugSize {
+            panel.setContentSize(ds)
+            placeTopRight(panel)
+        } else {
+            panel.setContentSize(NSSize(width: 320, height: 220))
+            // 前回のサイズ・位置を復元。無ければ右上あたりに初期配置。
+            if !panel.setFrameUsingName("AgentManagerPanel") { placeTopRight(panel) }
+        }
+        // 確定フレームに論理シーンを合わせる（部屋のサイズ感を実サイズへ）。
+        simulation.setSceneSize(panel.contentLayoutRect.size)
 
         // 初期表示はしない（waiting 連動）。waiting があれば StatusBarController が表示側へ倒す。
         self.panel = panel
@@ -138,13 +157,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 panel.orderOut(nil)
             }
         }
+        // 左クリックのトグル判定用。最小化中は「非表示」扱いにして次クリックで復帰させる。
+        sb.isWindowVisible = { [weak self] in
+            guard let panel = self?.panel else { return false }
+            return panel.isVisible && !panel.isMiniaturized
+        }
         self.statusBar = sb
+    }
+
+    /// メイン画面の右上あたりに配置する（確定サイズに対して計算する）。
+    private func placeTopRight(_ panel: NSPanel) {
+        guard let screen = NSScreen.main else { return }
+        let f = screen.visibleFrame
+        panel.setFrameOrigin(NSPoint(x: f.maxX - panel.frame.width - 20,
+                                     y: f.maxY - panel.frame.height - 20))
     }
 
     /// 中身追従で高さが変わったとき、上端(maxY)を固定したままリサイズする。
     /// NSPanel は左下原点なので、何もしないと高さ変化で窓が上下にずれて見える。
     @objc private func panelDidResize(_ note: Notification) {
         guard let panel = panel, !isAdjustingFrame else { return }
+        // 論理シーンを実サイズに合わせる（部屋が広がる／縮む）。
+        simulation?.setSceneSize(panel.contentLayoutRect.size)
+        // ユーザーのドラッグリサイズ中は OS が掴んだ辺を基準に処理するので上端固定を強制せず、
+        // 現在の上端を新しい基準として記録するだけにする。
+        if panel.inLiveResize {
+            anchorTopY = panel.frame.maxY
+            return
+        }
         guard let top = anchorTopY else { anchorTopY = panel.frame.maxY; return }
         let newOriginY = top - panel.frame.height
         if abs(panel.frame.origin.y - newOriginY) < 0.5 { return }  // 既に上端維持済み
