@@ -11,15 +11,29 @@ final class CatSimulation: ObservableObject {
     enum Scene {
         static let width: CGFloat = 160
         static let height: CGFloat = 110
-        static let skyBottom: CGFloat = 55      // 空バンド y0–55 / 床バンド y55–110
-        static let minX: CGFloat = 10, maxX: CGFloat = 150
+        static let wallBottom: CGFloat = 55     // 壁(と窓) y0–55 / 床 y55–110
+        static let minX: CGFloat = 10, maxX: CGFloat = 128  // 右端はキャットタワー占有域を避ける
         static let minY: CGFloat = 58, maxY: CGFloat = 94   // 猫の可動域
-        /// クッション2つの中心（猫が寝に行く位置）。
-        static let cushions: [CGPoint] = [CGPoint(x: 22, y: 86), CGPoint(x: 132, y: 86)]
         static let yarnHome = CGPoint(x: 80, y: 80)
         /// waiting の猫が集まる前列中央帯。
         static let frontY: CGFloat = 88
         static let frontCenterX: CGFloat = 80
+
+        /// 寝床スポット。歩いて行く位置と寝る位置を分ける
+        /// （キャットタワーは麓まで歩いてから天板へ跳び乗る）。
+        struct SleepSpot {
+            let walkTo: CGPoint
+            let sleepAt: CGPoint
+        }
+        static let sleepSpots: [SleepSpot] = [
+            SleepSpot(walkTo: CGPoint(x: 26, y: 86), sleepAt: CGPoint(x: 26, y: 84)),    // 青クッション
+            SleepSpot(walkTo: CGPoint(x: 114, y: 91), sleepAt: CGPoint(x: 114, y: 89)),  // 赤クッション
+            SleepSpot(walkTo: CGPoint(x: 146, y: 84), sleepAt: CGPoint(x: 144, y: 48)),  // タワー天板
+        ]
+        /// キャットタワーの描画位置（左上・論理px）。
+        static let towerTopLeft = CGPoint(x: 134, y: 52)
+        /// 観葉植物の描画位置。
+        static let plantTopLeft = CGPoint(x: 4, y: 44)
     }
 
     // MARK: - スナップショット（描画用・イミュータブル）
@@ -83,7 +97,7 @@ final class CatSimulation: ObservableObject {
         var label = ""
         var emote: EmoteKind?
         var emoteUntil: Int?     // nil = 永続（waiting の ❗ / 寝ている間の 💤）
-        var cushionIndex: Int?
+        var bedIndex: Int?       // 占有中の寝床スポット（sticky）
 
         init(sessionID: String, pos: CGPoint) {
             self.sessionID = sessionID
@@ -164,7 +178,7 @@ final class CatSimulation: ObservableObject {
         }
         // 消滅したセッションの猫は即削除（全終了時はアプリごと terminate するので退場アニメ不要）。
         for id in cats.keys where !ids.contains(id) {
-            if let cushion = cats[id]?.cushionIndex { cushionOwners[cushion] = nil }
+            if let bed = cats[id]?.bedIndex { bedOwners[bed] = nil }
             cats[id] = nil
         }
         retargetWaiting()
@@ -174,7 +188,7 @@ final class CatSimulation: ObservableObject {
     /// 新規セッション: ハッシュ由来のホーム位置へ画面端から歩いて入場する。
     private func spawn(_ session: Session) {
         let hash = SpriteRenderer.fnv1a(session.id)
-        let homeX = 20 + CGFloat(hash % 120)                  // 20...140
+        let homeX = 18 + CGFloat(hash % 109)                  // 18...126（タワー占有域を避ける）
         let homeY = Scene.minY + CGFloat((hash >> 16) % 36)   // 58...94
         let entryX: CGFloat = homeX < Scene.frontCenterX ? -10 : Scene.width + 10
         let cat = Cat(sessionID: session.id, pos: CGPoint(x: entryX, y: homeY))
@@ -187,7 +201,7 @@ final class CatSimulation: ObservableObject {
     /// 状態遷移エッジ。行動とエモートを切り替える。
     private func apply(category: Session.StatusCategory, to cat: Cat) {
         cat.category = category
-        if category != .idle { releaseCushion(cat) }
+        if category != .idle { releaseBed(cat) }
         switch category {
         case .waiting:
             cat.emote = .alert
@@ -288,6 +302,10 @@ final class CatSimulation: ObservableObject {
         case .meow:
             cat.activity = .meowing
         case .sleep:
+            if let bed = cat.bedIndex {
+                // 寝床の定位置に収まる（タワーは麓から天板へ跳び乗る）。
+                cat.pos = Scene.sleepSpots[bed].sleepAt
+            }
             cat.activity = .sleeping
             cat.emote = .zzz
             cat.emoteUntil = nil
@@ -297,19 +315,19 @@ final class CatSimulation: ObservableObject {
         }
     }
 
-    /// 空きクッションへ歩いて寝る（sticky 割当）。空きが無ければその場で寝る。
-    private var cushionOwners: [Int: String] = [:]
+    /// 空き寝床（クッション/タワー天板）へ歩いて寝る（sticky 割当）。空きが無ければその場で寝る。
+    private var bedOwners: [Int: String] = [:]
 
     private func headToBed(_ cat: Cat) {
-        if cat.cushionIndex == nil {
-            for (i, _) in Scene.cushions.enumerated() where cushionOwners[i] == nil {
-                cushionOwners[i] = cat.sessionID
-                cat.cushionIndex = i
+        if cat.bedIndex == nil {
+            for (i, _) in Scene.sleepSpots.enumerated() where bedOwners[i] == nil {
+                bedOwners[i] = cat.sessionID
+                cat.bedIndex = i
                 break
             }
         }
-        if let i = cat.cushionIndex {
-            let target = Scene.cushions[i]
+        if let i = cat.bedIndex {
+            let target = Scene.sleepSpots[i].walkTo
             if distance(cat.pos, target) < 1 {
                 arrive(cat, .sleep)
             } else {
@@ -320,10 +338,10 @@ final class CatSimulation: ObservableObject {
         }
     }
 
-    private func releaseCushion(_ cat: Cat) {
-        if let i = cat.cushionIndex {
-            cushionOwners[i] = nil
-            cat.cushionIndex = nil
+    private func releaseBed(_ cat: Cat) {
+        if let i = cat.bedIndex {
+            bedOwners[i] = nil
+            cat.bedIndex = nil
         }
     }
 
@@ -394,7 +412,7 @@ final class CatSimulation: ObservableObject {
         yarnRoll += abs(yarnVel.dx) + abs(yarnVel.dy)
         // 床バンド内にクランプ。
         yarnPos.x = min(max(yarnPos.x, 14), Scene.width - 14)
-        yarnPos.y = min(max(yarnPos.y, Scene.skyBottom + 8), Scene.maxY)
+        yarnPos.y = min(max(yarnPos.y, Scene.wallBottom + 9), Scene.maxY)
         yarnVel.dx *= 0.8
         yarnVel.dy *= 0.8
     }
@@ -485,7 +503,7 @@ final class CatSimulation: ObservableObject {
         for cat in cats.values.sorted(by: { $0.sessionID < $1.sessionID }) {
             lines.append("\(cat.sessionID): category=\(cat.category) activity=\(cat.activity) "
                 + "emote=\(String(describing: cat.emote)) until=\(String(describing: cat.emoteUntil)) "
-                + "pos=(\(Int(cat.pos.x)),\(Int(cat.pos.y))) cushion=\(String(describing: cat.cushionIndex))")
+                + "pos=(\(Int(cat.pos.x)),\(Int(cat.pos.y))) bed=\(String(describing: cat.bedIndex))")
         }
         return lines.joined(separator: "\n")
     }
