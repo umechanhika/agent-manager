@@ -135,13 +135,37 @@ enum SpriteRenderer {
         }
     }
 
-    /// クッション。
-    static func cushionImage() -> CGImage {
-        propImage(name: "cushion") {
-            bake(frame: SpriteData.cushion, colors: [
+    /// クッション。variant 0=青 / 1=赤（どの寝床か見分けやすいよう色違いにする）。
+    static func cushionImage(variant: Int) -> CGImage {
+        let palettes: [[Character: PixelColor]] = [
+            [
                 "O": .init(r: 0.20, g: 0.21, b: 0.30),
                 "B": .init(r: 0.46, g: 0.50, b: 0.70),
                 "S": .init(r: 0.36, g: 0.40, b: 0.58),
+                "W": .init(r: 0.62, g: 0.66, b: 0.82),
+            ],
+            [
+                "O": .init(r: 0.30, g: 0.17, b: 0.16),
+                "B": .init(r: 0.76, g: 0.42, b: 0.36),
+                "S": .init(r: 0.62, g: 0.32, b: 0.28),
+                "W": .init(r: 0.88, g: 0.60, b: 0.52),
+            ],
+        ]
+        let v = variant % palettes.count
+        return propImage(name: "cushion\(v)") {
+            bake(frame: SpriteData.cushion, colors: palettes[v], mirrored: false)
+        }
+    }
+
+    /// キャットタワー。
+    static func towerImage() -> CGImage {
+        propImage(name: "tower") {
+            bake(frame: SpriteData.catTower, colors: [
+                "O": .init(r: 0.22, g: 0.17, b: 0.13),
+                "B": .init(r: 0.82, g: 0.74, b: 0.60),
+                "S": .init(r: 0.68, g: 0.60, b: 0.47),
+                "P": .init(r: 0.62, g: 0.48, b: 0.32),
+                "N": .init(r: 0.51, g: 0.38, b: 0.25),
             ], mirrored: false)
         }
     }

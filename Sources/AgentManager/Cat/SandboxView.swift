@@ -40,15 +40,16 @@ struct SandboxView: View {
             let theme = SkyTheme.current()
             let s = Self.scale
 
-            drawSky(context, theme: theme, tick: snap.twinkle)
-            drawFloor(context, theme: theme)
+            drawRoom(context, theme: theme, twinkle: snap.twinkle)
 
             // 小物（猫より奥）。
             draw(context, image: SpriteRenderer.plantImage(),
-                 topLeft: CGPoint(x: 4, y: 48), w: 12, h: 16)
-            for cushion in CatSimulation.Scene.cushions {
-                draw(context, image: SpriteRenderer.cushionImage(),
-                     topLeft: CGPoint(x: cushion.x - 8, y: cushion.y - 3), w: 16, h: 8)
+                 topLeft: CatSimulation.Scene.plantTopLeft, w: 16, h: 16)
+            draw(context, image: SpriteRenderer.towerImage(),
+                 topLeft: CatSimulation.Scene.towerTopLeft, w: 24, h: 38)
+            for (i, spot) in CatSimulation.Scene.sleepSpots.prefix(2).enumerated() {
+                draw(context, image: SpriteRenderer.cushionImage(variant: i),
+                     topLeft: CGPoint(x: spot.walkTo.x - 8, y: spot.walkTo.y - 3), w: 16, h: 8)
             }
             draw(context, image: SpriteRenderer.yarnImage(frame: snap.yarnFrame),
                  topLeft: CGPoint(x: snap.yarnPos.x - 4, y: snap.yarnPos.y - 4), w: 8, h: 8)
@@ -83,32 +84,54 @@ struct SandboxView: View {
         context.draw(img, in: rect)
     }
 
-    private func drawSky(_ context: GraphicsContext, theme: SkyTheme, tick: Int) {
+    /// 部屋の内装: 壁 → 大きな窓（空と星は窓の中）→ 巾木 → 木の床 → ラグ。
+    private func drawRoom(_ context: GraphicsContext, theme: SkyTheme, twinkle: Int) {
         let s = Self.scale
-        // フラット3横帯（グラデ禁止：ピクセル風）。
-        let bands: [(CGFloat, CGFloat)] = [(0, 24), (24, 42), (42, 55)]
+        func fillRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: Color) {
+            context.fill(Path(CGRect(x: x * s, y: y * s, width: w * s, height: h * s)),
+                         with: .color(color))
+        }
+
+        // 壁と巾木。
+        fillRect(0, 0, 160, 55, theme.wall)
+        fillRect(0, 52, 160, 3, theme.wallShade)
+
+        // 窓（枠2px・十字の桟）。空のフラット3横帯は窓ガラスの中にだけ見える。
+        let frameColor = Color(red: 0.43, green: 0.32, blue: 0.23)
+        fillRect(46, 4, 76, 42, frameColor)
+        let bands: [(CGFloat, CGFloat)] = [(6, 19), (19, 32), (32, 44)]
         for (i, band) in bands.enumerated() {
-            context.fill(
-                Path(CGRect(x: 0, y: band.0 * s, width: 160 * s, height: (band.1 - band.0) * s)),
-                with: .color(theme.sky[i]))
+            fillRect(48, band.0, 72, band.1 - band.0, theme.sky[i])
         }
         if theme.isNight {
-            for (i, star) in Self.stars.enumerated() where (tick + i * 7) % 24 < 16 {
-                let bright = (tick + i * 5) % 24 < 8
-                context.fill(
-                    Path(CGRect(x: star.x * s, y: star.y * s, width: s, height: s)),
-                    with: .color(.white.opacity(bright ? 0.95 : 0.55)))
+            for (i, star) in Self.stars.enumerated() where (twinkle + i * 7) % 24 < 16 {
+                let bright = (twinkle + i * 5) % 24 < 8
+                fillRect(star.x, star.y, 1, 1, .white.opacity(bright ? 0.95 : 0.55))
             }
         }
-    }
+        fillRect(82, 6, 2, 38, frameColor)    // 縦桟
+        fillRect(48, 23, 72, 2, frameColor)   // 横桟
+        fillRect(44, 46, 80, 2, frameColor)   // 窓台（下枠を少し張り出す）
 
-    private func drawFloor(_ context: GraphicsContext, theme: SkyTheme) {
-        let s = Self.scale
-        context.fill(Path(CGRect(x: 0, y: 55 * s, width: 160 * s, height: 55 * s)),
-                     with: .color(theme.floor))
-        // 床の最奥に陰の帯を1本（疑似奥行き）。
-        context.fill(Path(CGRect(x: 0, y: 55 * s, width: 160 * s, height: 2 * s)),
-                     with: .color(theme.floorShade))
+        // 木の床: 板の継ぎ目（横）と互い違いの短い縦継ぎ目。
+        fillRect(0, 55, 160, 55, theme.floor)
+        fillRect(0, 55, 160, 2, theme.floorShade)
+        var plank = 0
+        for y in stride(from: 63 as CGFloat, to: 110, by: 8) {
+            fillRect(0, y, 160, 1, theme.floorSeam)
+            let x1 = CGFloat((plank * 53 + 20) % 160)
+            let x2 = CGFloat((plank * 53 + 100) % 160)
+            fillRect(x1, y - 8 + 1, 1, 7, theme.floorSeam)
+            fillRect(x2, y - 8 + 1, 1, 7, theme.floorSeam)
+            plank += 1
+        }
+
+        // ラグ（前列中央帯と毛糸玉の下）。
+        let rug = CGRect(x: 50 * s, y: 72 * s, width: 60 * s, height: 26 * s)
+        context.fill(Path(roundedRect: rug, cornerRadius: 4 * s),
+                     with: .color(Color(red: 0.45, green: 0.34, blue: 0.35)))
+        context.fill(Path(roundedRect: rug.insetBy(dx: s, dy: s), cornerRadius: 3 * s),
+                     with: .color(Color(red: 0.56, green: 0.43, blue: 0.44)))
     }
 
     private func drawNameplate(_ context: GraphicsContext, cat: CatSimulation.CatSnapshot,
@@ -120,20 +143,28 @@ struct SandboxView: View {
                 .font(.system(size: 7, design: .monospaced))
                 .foregroundColor(.white.opacity(theme.isNight ? 0.7 : 0.92)))
         let size = resolved.measure(in: CGSize(width: 300, height: 20))
-        let bg = CGRect(x: (cx - size.width / 2 - 2).rounded(), y: topY,
-                        width: size.width + 4, height: size.height + 1)
+        // 左端に状態ドット（メニューバーと同じ配色）。エモートが消えた後も状態が一目で分かる。
+        let dot: CGFloat = 5
+        let bg = CGRect(x: (cx - (size.width + dot + 2) / 2 - 2).rounded(), y: topY,
+                        width: size.width + dot + 2 + 4, height: size.height + 1)
         context.fill(Path(roundedRect: bg, cornerRadius: 2),
                      with: .color(.black.opacity(theme.isNight ? 0.30 : 0.42)))
-        context.draw(resolved, at: CGPoint(x: cx, y: bg.midY), anchor: .center)
+        context.fill(
+            Path(ellipseIn: CGRect(x: bg.minX + 2, y: (bg.midY - dot / 2).rounded(),
+                                   width: dot, height: dot)),
+            with: .color(Session.color(for: cat.category)))
+        context.draw(resolved,
+                     at: CGPoint(x: bg.minX + 2 + dot + 2 + size.width / 2, y: bg.midY),
+                     anchor: .center)
     }
 
-    /// 夜空の星（論理座標・固定シード）。
+    /// 夜空の星（論理座標・固定シード）。窓ガラスの内側（x48–120, y6–44）に収める。
     private static let stars: [CGPoint] = [
-        CGPoint(x: 12, y: 8), CGPoint(x: 30, y: 18), CGPoint(x: 44, y: 6),
-        CGPoint(x: 58, y: 26), CGPoint(x: 70, y: 12), CGPoint(x: 84, y: 32),
-        CGPoint(x: 95, y: 7), CGPoint(x: 108, y: 20), CGPoint(x: 121, y: 10),
-        CGPoint(x: 133, y: 28), CGPoint(x: 146, y: 15), CGPoint(x: 152, y: 38),
-        CGPoint(x: 22, y: 38), CGPoint(x: 66, y: 44),
+        CGPoint(x: 52, y: 9), CGPoint(x: 60, y: 16), CGPoint(x: 69, y: 8),
+        CGPoint(x: 76, y: 27), CGPoint(x: 88, y: 12), CGPoint(x: 97, y: 30),
+        CGPoint(x: 104, y: 9), CGPoint(x: 111, y: 20), CGPoint(x: 56, y: 34),
+        CGPoint(x: 116, y: 38), CGPoint(x: 64, y: 28), CGPoint(x: 92, y: 39),
+        CGPoint(x: 71, y: 18), CGPoint(x: 108, y: 33),
     ]
 
     // MARK: - ヒットレクト（猫クリック→ターミナル前面化）
@@ -205,11 +236,14 @@ struct SandboxView: View {
     }
 }
 
-/// 時刻バケットで変わる昼夜テーマ。空はフラット横帯3色。
+/// 時刻バケットで変わる昼夜テーマ。空（窓の中）はフラット横帯3色、壁と床も連動して明るさが変わる。
 struct SkyTheme {
-    let sky: [Color]        // 上→下の3帯
+    let sky: [Color]        // 窓の中・上→下の3帯
+    let wall: Color
+    let wallShade: Color    // 巾木
     let floor: Color
     let floorShade: Color
+    let floorSeam: Color    // 床板の継ぎ目
     let isNight: Bool
 
     static func current(now: Date = Date()) -> SkyTheme {
@@ -231,31 +265,43 @@ struct SkyTheme {
         sky: [Color(red: 0.45, green: 0.38, blue: 0.56),
               Color(red: 0.78, green: 0.55, blue: 0.50),
               Color(red: 0.93, green: 0.72, blue: 0.53)],
-        floor: Color(red: 0.56, green: 0.43, blue: 0.32),
-        floorShade: Color(red: 0.47, green: 0.35, blue: 0.26),
+        wall: Color(red: 0.84, green: 0.75, blue: 0.70),
+        wallShade: Color(red: 0.72, green: 0.62, blue: 0.57),
+        floor: Color(red: 0.66, green: 0.50, blue: 0.35),
+        floorShade: Color(red: 0.55, green: 0.41, blue: 0.28),
+        floorSeam: Color(red: 0.57, green: 0.42, blue: 0.29),
         isNight: false)
 
     private static let day = SkyTheme(
         sky: [Color(red: 0.45, green: 0.71, blue: 0.91),
               Color(red: 0.56, green: 0.78, blue: 0.94),
               Color(red: 0.68, green: 0.85, blue: 0.97)],
-        floor: Color(red: 0.62, green: 0.47, blue: 0.34),
-        floorShade: Color(red: 0.52, green: 0.38, blue: 0.27),
+        wall: Color(red: 0.90, green: 0.85, blue: 0.76),
+        wallShade: Color(red: 0.79, green: 0.73, blue: 0.63),
+        floor: Color(red: 0.70, green: 0.53, blue: 0.36),
+        floorShade: Color(red: 0.58, green: 0.43, blue: 0.28),
+        floorSeam: Color(red: 0.60, green: 0.44, blue: 0.29),
         isNight: false)
 
     private static let dusk = SkyTheme(
         sky: [Color(red: 0.33, green: 0.27, blue: 0.47),
               Color(red: 0.70, green: 0.38, blue: 0.40),
               Color(red: 0.91, green: 0.59, blue: 0.37)],
-        floor: Color(red: 0.49, green: 0.37, blue: 0.30),
-        floorShade: Color(red: 0.40, green: 0.29, blue: 0.24),
+        wall: Color(red: 0.72, green: 0.61, blue: 0.58),
+        wallShade: Color(red: 0.61, green: 0.50, blue: 0.47),
+        floor: Color(red: 0.58, green: 0.44, blue: 0.31),
+        floorShade: Color(red: 0.47, green: 0.35, blue: 0.25),
+        floorSeam: Color(red: 0.49, green: 0.36, blue: 0.25),
         isNight: false)
 
     private static let night = SkyTheme(
         sky: [Color(red: 0.08, green: 0.11, blue: 0.20),
               Color(red: 0.11, green: 0.15, blue: 0.27),
               Color(red: 0.15, green: 0.20, blue: 0.34)],
-        floor: Color(red: 0.27, green: 0.22, blue: 0.20),
-        floorShade: Color(red: 0.21, green: 0.17, blue: 0.16),
+        wall: Color(red: 0.24, green: 0.23, blue: 0.30),
+        wallShade: Color(red: 0.18, green: 0.17, blue: 0.23),
+        floor: Color(red: 0.30, green: 0.24, blue: 0.21),
+        floorShade: Color(red: 0.23, green: 0.18, blue: 0.16),
+        floorSeam: Color(red: 0.24, green: 0.18, blue: 0.16),
         isNight: true)
 }

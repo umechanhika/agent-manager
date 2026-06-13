@@ -333,39 +333,84 @@ enum SpriteData {
     ]
     static let yarnSize = (w: 8, h: 8)
 
-    /// クッション 16x8。B=布 S=陰。
+    /// クッション 16x8。B=布 S=陰/中央ボタン W=ステッチ光。色違いはパレット側で出す。
     static let cushion: Frame = [
-        "....OOOOOOOO....",
-        "..OOBBBBBBBBOO..",
-        ".OBBBBBBBBBBBBO.",
-        "OBSBBBBBBBBBBSO.",
-        "OBBBBBBBBBBBBBBO",
-        ".OBBBBBBBBBBBBO.",
-        "..OOSSSSSSSSOO..",
-        "....OOOOOOOO....",
+        "...OOOOOOOOOO...",
+        ".OOBBBBBBBBBBOO.",
+        "OBBWBBBBBBBBWBBO",
+        "OBBBBBBSSBBBBBBO",
+        "OBBBBBBSSBBBBBBO",
+        "OBBWBBBBBBBBWBBO",
+        ".OOSSSSSSSSSSOO.",
+        "...OOOOOOOOOO...",
     ]
     static let cushionSize = (w: 16, h: 8)
 
-    /// 観葉植物 12x16。B=葉 S=濃い葉 P=鉢 N=鉢の陰。
+    /// 観葉植物 16x16。丸い茂みの鉢植え（葉の間の輪郭線で葉群テクスチャを出す）。
+    /// B=葉 S=濃い葉 P=鉢 N=鉢の陰。
     static let plant: Frame = [
-        "....OOOO....",
-        "..OOBBBBOO..",
-        ".OBBSBBSBBO.",
-        "OBBBBSSBBBBO",
-        "OBSBBBBBBSBO",
-        ".OBBSBBSBBO.",
-        "..OBBBBBBO..",
-        "...OBBBBO...",
-        "....OOOO....",
-        "...OPPPPO...",
-        "...OPNNPO...",
-        "...OPPPPO...",
-        "...OPPPPO...",
-        "....OPPO....",
-        "....OOOO....",
-        "............",
+        "....OOOOOO......",
+        "..OOBBBBBBOO....",
+        ".OBBSBBBBSBBO...",
+        "OBBBBBOBBBBSBO..",
+        "OBSBBOBBOBBBBO..",
+        "OBBBBBOBBOBSBO..",
+        ".OBSBBBBOBBBO...",
+        "..OBBOBBBBBO....",
+        "...OOBBBBOO.....",
+        "....OOOOOOO.....",
+        "....OPPPPPO.....",
+        ".....OPNPO......",
+        ".....OPPPO......",
+        ".....OPNPO......",
+        "......OOO.......",
+        "................",
     ]
-    static let plantSize = (w: 12, h: 16)
+    static let plantSize = (w: 16, h: 16)
+
+    /// キャットタワー 24x38。天板（猫の寝床スポット）＋中段＋サイザル柱＋台座。
+    /// B=カーペット S=陰 P=柱 N=サイザル縞。
+    static let catTower: Frame = [
+        "..OOOOOOOOOOOOOOOOOO....",
+        ".OBBBBBBBBBBBBBBBBBBO...",
+        ".OSBBBBBBBBBBBBBBBBSO...",
+        "..OOOOOOOOOOOOOOOOOO....",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "....OOOOOOOOOOOOOOOO....",
+        "...OBBBBBBBBBBBBBBBBO...",
+        "...OSBBBBBBBBBBBBBBSO...",
+        "....OOOOOOOOOOOOOOOO....",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        "..........OPPO..........",
+        "..........ONNO..........",
+        "..........OPPO..........",
+        ".OOOOOOOOOOOOOOOOOOOOOO.",
+        "OBBBBBBBBBBBBBBBBBBBBBBO",
+        "OSBBBBBBBBBBBBBBBBBBBBSO",
+        ".OOOOOOOOOOOOOOOOOOOOOO.",
+    ]
+    static let catTowerSize = (w: 24, h: 38)
 
     // MARK: - エモート（10x10 固定色: O=縁 W=吹き出し地 N=アクセント）
 
@@ -456,6 +501,7 @@ enum SpriteData {
         for (i, f) in yarn.enumerated() { assertFrame(f, w: yarnSize.w, h: yarnSize.h, name: "yarn[\(i)]") }
         assertFrame(cushion, w: cushionSize.w, h: cushionSize.h, name: "cushion")
         assertFrame(plant, w: plantSize.w, h: plantSize.h, name: "plant")
+        assertFrame(catTower, w: catTowerSize.w, h: catTowerSize.h, name: "catTower")
         for (kind, frames) in emotes {
             for (i, f) in frames.enumerated() {
                 assertFrame(f, w: emoteSize, h: emoteSize, name: "emote.\(kind.rawValue)[\(i)]")
