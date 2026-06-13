@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// 箱庭ビュー本体。論理シーンを 2x で描画する（倍率固定でピクセルパーフェクト維持）。
@@ -15,7 +16,7 @@ struct SandboxView: View {
     private static let scale: CGFloat = 2
 
     var body: some View {
-        // 掲示板・ヘッダーは store だけに依存させ、8Hz の snapshot 更新で再描画させない
+        // 掲示板は store だけに依存させ、8Hz の snapshot 更新では再描画させない
         // （子ビューに分離。layout は Equatable 値で渡すので変化時のみ再評価される）。
         let layout = simulation.snapshot.layout
         return ZStack(alignment: .topLeading) {
@@ -23,8 +24,6 @@ struct SandboxView: View {
                 .allowsHitTesting(false)
             BoardView(store: store, layout: layout, scale: Self.scale)
             hitRects
-            HeaderView(store: store)
-                .allowsHitTesting(false)
             if store.sessions.isEmpty {
                 Text("セッションなし")
                     .font(.system(size: 11))
@@ -238,12 +237,21 @@ enum SessionTooltip {
     }
 }
 
-/// 左壁の掲示板（セッション一覧。猫のネームプレート風）。
+/// 左壁の掲示板（セッション一覧）。各行は「その子の色の猫アイコン ＋ 名前 ＋ ›」の
+/// ネームプレートで、クリックで対応するターミナルへ飛べる（ホバーで行が光り、カーソルが
+/// ポインタに変わるので "タップで遷移できる" と一目で分かる）。
 /// store と layout だけに依存させ、8Hz の snapshot 更新では再評価されない。
 struct BoardView: View {
     @ObservedObject var store: SessionStore
     let layout: CatSimulation.RoomLayout
     let scale: CGFloat
+
+    /// ホバー中の行（ハイライト用）。
+    @State private var hoveredID: String?
+
+    /// 1行の高さと猫アイコンの表示サイズ（pt）。読みやすさ優先で前版(7pt)から拡大。
+    private static let rowH: CGFloat = 14
+    private static let iconPt: CGFloat = 14
 
     var body: some View {
         let theme = SkyTheme.current()
@@ -256,88 +264,90 @@ struct BoardView: View {
             let ib = order.firstIndex(of: b.category) ?? order.count
             return ia != ib ? ia < ib : a.label < b.label
         }
-        let rowH: CGFloat = 11
         let pad: CGFloat = 3
         let avail = rect.height * s - pad * 2
-        let capacity = max(0, Int(avail / rowH))
-        let shown = Array(sessions.prefix(capacity))
+        let capacity = max(0, Int(avail / Self.rowH))
+        // あふれる場合は最終行を「ほか +N」に使うので 1 行ぶん空ける。
+        let needsOverflow = sessions.count > capacity
+        let rowCap = needsOverflow ? max(0, capacity - 1) : capacity
+        let shown = Array(sessions.prefix(rowCap))
         let overflow = sessions.count - shown.count
 
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(shown) { session in
-                row(session, theme: theme).frame(height: rowH)
+                row(session, theme: theme)
             }
             if overflow > 0 {
-                Text("+\(overflow)")
-                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(theme.isNight ? 0.5 : 0.7))
-                    .frame(height: rowH - 2)
+                Text("ほか +\(overflow)")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.white.opacity(theme.isNight ? 0.5 : 0.72))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: Self.rowH - 3)
+                    .padding(.leading, 3)
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 3)
         .padding(.vertical, pad)
         .frame(width: rect.width * s, height: rect.height * s, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color(red: 0.36, green: 0.27, blue: 0.20).opacity(theme.isNight ? 0.55 : 0.85))
-                .overlay(RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Color(red: 0.22, green: 0.16, blue: 0.11).opacity(0.8), lineWidth: 1))
-        )
+        .background(boardBackground(theme))
         .position(x: rect.midX * s, y: rect.midY * s)
     }
 
+    /// 木目調の掲示板の背景（夜は減光）。
+    private func boardBackground(_ theme: SkyTheme) -> some View {
+        let wood = Color(red: 0.36, green: 0.27, blue: 0.20)
+        return RoundedRectangle(cornerRadius: 4)
+            .fill(wood.opacity(theme.isNight ? 0.55 : 0.85))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(Color(red: 0.22, green: 0.16, blue: 0.11).opacity(0.8), lineWidth: 1)
+            )
+    }
+
     private func row(_ session: Session, theme: SkyTheme) -> some View {
-        HStack(spacing: 3) {
-            Circle()
-                .fill(Session.color(for: session.category))
-                .frame(width: 5, height: 5)
+        let hovered = hoveredID == session.id
+        // session.id だけで決まる決定論マッピングなので、simulation に触れずに
+        // その子と同じ見た目の猫を描ける（＝8Hz 非依存を維持できる）。
+        let iconPx = CGFloat(SpriteRenderer.bakeScale * 16)
+        let cat = SpriteRenderer.catImage(
+            anim: .sit, frame: 0,
+            paletteIndex: SpriteRenderer.paletteIndex(for: session.id),
+            mirrored: false, nightEyes: false)
+        return HStack(spacing: 3) {
+            Image(decorative: cat, scale: iconPx / Self.iconPt)
+                .interpolation(.none)
+                .antialiased(false)
             Text(session.label)
-                .font(.system(size: 7, design: .monospaced))
-                .foregroundStyle(.white.opacity(theme.isNight ? 0.72 : 0.94))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.white.opacity(theme.isNight ? 0.78 : 0.96))
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: 0)
+            Spacer(minLength: 1)
+            // › でタップ＝遷移を示唆。ホバー時は明るくする。
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white.opacity(hovered ? 0.92 : (theme.isNight ? 0.40 : 0.55)))
         }
+        .padding(.horizontal, 2)
+        .frame(height: Self.rowH)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 3)
+                .fill(.white.opacity(hovered ? 0.14 : 0))
+        )
         .contentShape(Rectangle())
         .onTapGesture { ITermFocus.focus(session: session) }
-        .help(SessionTooltip.text(for: session))
-    }
-}
-
-/// ヘッダー細帯（カテゴリ別の色付き●件数 + ドラッグつまみ）。store だけに依存。
-struct HeaderView: View {
-    @ObservedObject var store: SessionStore
-
-    var body: some View {
-        // メニューバーと同じ集計（done緑→processing青→waiting黄→idle灰、0件は非表示）。
-        let counts = Dictionary(grouping: store.sessions, by: { $0.category }).mapValues { $0.count }
-        let visible = Session.StatusCategory.displayOrder.compactMap { cat -> (Session.StatusCategory, Int)? in
-            let c = counts[cat] ?? 0
-            return c > 0 ? (cat, c) : nil
-        }
-        return ZStack {
-            Capsule()
-                .fill(.white.opacity(0.30))
-                .frame(width: 26, height: 3)
-            HStack(spacing: 6) {
-                ForEach(Array(visible.enumerated()), id: \.offset) { _, pair in
-                    HStack(spacing: 2) {
-                        Circle()
-                            .fill(Session.color(for: pair.0))
-                            .frame(width: 6, height: 6)
-                        Text("\(pair.1)")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.85))
-                    }
-                }
-                Spacer(minLength: 0)
+        .onHover { inside in
+            if inside {
+                hoveredID = session.id
+                NSCursor.pointingHand.push()
+            } else {
+                if hoveredID == session.id { hoveredID = nil }
+                NSCursor.pop()
             }
-            .padding(.horizontal, 8)
         }
-        .frame(height: 14)
-        .background(.black.opacity(0.25))
+        .help(SessionTooltip.text(for: session))
     }
 }
 
