@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
-            styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
@@ -66,35 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
 
         panel.contentView = hosting
-        // 箱庭ビューはリサイズ可能。倍率は常に 2x 固定なので論理 px が整数になるよう
-        // 2pt 刻みでリサイズさせ、最小は論理 160x110（= 320x220pt）。
-        panel.contentMinSize = NSSize(width: 320, height: 220)
-        panel.contentResizeIncrements = NSSize(width: 2, height: 2)
+        // 箱庭ビューはサイズ固定（320x220pt = 論理 160x110・倍率 2x）。リサイズは
+        // 「小さな箱庭」の価値を損なうため不可にし、位置だけ前回値を復元する。
         panel.setFrameAutosaveName("AgentManagerPanel")
 
-        // 検証用の固定サイズ指定（拡大状態の再現）。指定があればフレーム復元より優先する。
-        var debugSize: NSSize?
-        #if DEBUG
-        if let spec = ProcessInfo.processInfo.environment["AGENT_MANAGER_SIZE"] {
-            let parts = spec.split(separator: "x").compactMap { Int($0) }
-            if parts.count == 2 {
-                debugSize = NSSize(width: max(320, parts[0] - parts[0] % 2),
-                                   height: max(220, parts[1] - parts[1] % 2))
-            }
-        }
-        #endif
-
-        // サイズを確定してから右上に配置する（先に配置すると後のリサイズで画面外へはみ出す）。
-        if let ds = debugSize {
-            panel.setContentSize(ds)
-            placeTopRight(panel)
-        } else {
-            panel.setContentSize(NSSize(width: 320, height: 220))
-            // 前回のサイズ・位置を復元。無ければ右上あたりに初期配置。
-            if !panel.setFrameUsingName("AgentManagerPanel") { placeTopRight(panel) }
-        }
-        // 確定フレームに論理シーンを合わせる（部屋のサイズ感を実サイズへ）。
-        simulation.setSceneSize(panel.contentLayoutRect.size)
+        panel.setContentSize(NSSize(width: 320, height: 220))
+        // 前回の位置を復元（サイズは固定なので常に 320x220）。無ければ右上あたりに初期配置。
+        if !panel.setFrameUsingName("AgentManagerPanel") { placeTopRight(panel) }
 
         // 初期表示はしない（waiting 連動）。waiting があれば StatusBarController が表示側へ倒す。
         self.panel = panel
@@ -177,14 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// NSPanel は左下原点なので、何もしないと高さ変化で窓が上下にずれて見える。
     @objc private func panelDidResize(_ note: Notification) {
         guard let panel = panel, !isAdjustingFrame else { return }
-        // 論理シーンを実サイズに合わせる（部屋が広がる／縮む）。
-        simulation?.setSceneSize(panel.contentLayoutRect.size)
-        // ユーザーのドラッグリサイズ中は OS が掴んだ辺を基準に処理するので上端固定を強制せず、
-        // 現在の上端を新しい基準として記録するだけにする。
-        if panel.inLiveResize {
-            anchorTopY = panel.frame.maxY
-            return
-        }
+        // サイズは固定だが、最小化からの復帰など高さが動いた場合に上端(maxY)を保つ。
         guard let top = anchorTopY else { anchorTopY = panel.frame.maxY; return }
         let newOriginY = top - panel.frame.height
         if abs(panel.frame.origin.y - newOriginY) < 0.5 { return }  // 既に上端維持済み

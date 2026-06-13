@@ -15,9 +15,9 @@ final class CatSimulation: ObservableObject {
         let sleepAt: CGPoint
     }
 
-    /// 論理シーンサイズから全ジオメトリを導出する。ウィンドウのリサイズで
-    /// width/height が変わると家具は壁際にアンカーしたまま床・窓・掲示板が広がる。
-    /// スプライト自体は固定サイズなので倍率は常に 2x（ピクセルパーフェクト維持）。
+    /// 論理シーンサイズから全ジオメトリを導出する。現在はウィンドウ固定（160x110）で
+    /// 構築されるが、家具を壁際/領域にアンカーする構造は単一ソースとして残している。
+    /// スプライトは固定サイズ・倍率は常に 2x（ピクセルパーフェクト維持）。
     struct RoomLayout: Equatable {
         let width: CGFloat
         let height: CGFloat
@@ -39,12 +39,12 @@ final class CatSimulation: ObservableObject {
             let wb = (height * 0.5).rounded()
             self.wallBottom = wb
 
-            // 壁の造作: 左に掲示板、右寄りに窓。ヘッダー帯(論理 ~7px)より下から始める。
-            self.boardRect = CGRect(x: 4, y: 10, width: 52, height: wb - 23)
+            // 壁の造作: 左に掲示板、右寄りに窓。ヘッダー帯を撤去したので上端近く(y4)から始める。
+            self.boardRect = CGRect(x: 4, y: 4, width: 54, height: wb - 17)
             // 窓は x62 から右端手前(width-28)まで。幅が広いほどガラスが伸びる。
             let winX: CGFloat = 62
-            self.windowRect = CGRect(x: winX, y: 10, width: max(40, width - 28 - winX),
-                                     height: wb - 19)
+            self.windowRect = CGRect(x: winX, y: 4, width: max(40, width - 28 - winX),
+                                     height: wb - 13)
             // タワーは床に立つ（高さ可変でも床底にアンカー）。植物は掲示板の真下。
             self.towerTopLeft = CGPoint(x: width - 26, y: height - 42)
             self.plantTopLeft = CGPoint(x: 4, y: wb - 11)
@@ -195,38 +195,6 @@ final class CatSimulation: ObservableObject {
     /// ホバー中の猫は移動を止める（動く的だとクリックの mouseDown/Up が外れるため）。
     func setHovered(_ sessionID: String?) {
         hoveredID = sessionID
-    }
-
-    /// ウィンドウのリサイズに追従して部屋の論理サイズを更新する。
-    /// 倍率は常に 2x 固定なので 論理 = floor(pt / 2)。サイズが変わったときだけ
-    /// 部屋を作り直し、猫・毛糸・寝床を新しい配置へ順応させる。
-    func setSceneSize(_ pt: CGSize) {
-        let w = max(CatSimulation.minLogical.width, (pt.width / 2).rounded(.down))
-        let h = max(CatSimulation.minLogical.height, (pt.height / 2).rounded(.down))
-        guard w != layout.width || h != layout.height else { return }
-        layout = RoomLayout(width: w, height: h)
-
-        // 毛糸玉を新しい床へ収める。
-        yarnPos.x = min(max(yarnPos.x, 14), layout.width - 14)
-        yarnPos.y = min(max(yarnPos.y, layout.wallBottom + 9), layout.maxY)
-
-        // 各猫を新可動域へ順応させる。歩行/寝床/前列は目的地を作り直す。
-        for cat in cats.values {
-            switch cat.activity {
-            case .sleeping:
-                // 寝ている猫は新しい寝床定位置へ瞬間移動（歩き直させない）。
-                if let bed = cat.bedIndex { cat.pos = layout.sleepSpots[bed].sleepAt }
-            case .walking where cat.category == .idle:
-                headToBed(cat)   // 寝床へ向かう途中なら新しい walkTo へ張り直す
-            case .walking(let target, let goal):
-                cat.pos = clampToField(cat.pos)
-                cat.activity = .walking(to: clampToField(target), then: goal)
-            default:
-                cat.pos = clampToField(cat.pos)
-            }
-        }
-        retargetWaiting()
-        publish()
     }
 
     private func startTimer() {
