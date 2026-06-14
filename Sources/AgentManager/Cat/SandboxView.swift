@@ -77,9 +77,8 @@ struct WindowWallBackground: View {
                 fillRect(cx - w * 0.08, cy - 3.5, w * 0.30, 3, c)
             }
 
-            let frameColor = Color(red: 0.43, green: 0.32, blue: 0.23)
-            fillRect(0, 0, W, H, frameColor)                 // 外枠
-            let gx: CGFloat = 3, gy: CGFloat = 3, gw = W - 6, gh = H - 6   // ガラス（窓の内側）
+            // 枠なしの全面窓ガラス（開放的に外の景色がエッジまで広がる）。
+            let gx: CGFloat = 0, gy: CGFloat = 0, gw = W, gh = H
 
             // 空（上→下の3帯）。
             for i in 0..<3 {

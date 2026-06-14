@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// アプリの主役＝セッション一覧。壁一面の窓（外の景色）の前に浮かぶ「ガラスのパネル」として並べ、
-/// 部屋の世界観に溶け込ませる。各行はステータスランプ＋名前のみ（状態文言・経過は出さない）。
+/// アプリの主役＝セッション一覧。全面窓ガラス（外の景色）の前に浮かぶ「1枚のガラスボード」に
+/// 全セッションを載せる（区切り線なし・背景の景色の層が自然な仕切りになる）。
+/// 各行はステータスランプ＋名前のみ（状態文言・経過は出さない）。
 /// store のみを購読し、下部の床ストリップ（8Hz）とは別ビューなので 8Hz の再描画に巻き込まれない。
 struct SessionPlatesView: View {
     @ObservedObject var store: SessionStore
@@ -18,23 +19,29 @@ struct SessionPlatesView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 10)
             } else {
-                // ScrollView は使わない（フローティングパネルの first-click を殺さないため）。
-                // 高さは中身追従で件数ぶん伸びる。
-                VStack(spacing: 4) {
+                VStack(spacing: 0) {
                     ForEach(store.sessions) { session in
                         PlateRow(session: session, theme: theme)
                     }
                 }
+                .background(boardBackground)
                 .padding(.horizontal, 8)
                 .padding(.top, 6)
                 .padding(.bottom, 8)
             }
         }
     }
+
+    /// 全セッションをまとめて載せる 1 枚の磨りガラスボード（背後の窓＝外の景色が透ける）。
+    private var boardBackground: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(.white.opacity(GlassStyle.opacity))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.55), lineWidth: 1))
+    }
 }
 
-/// 窓の前に浮かぶガラスの1枚＝1セッション。左にステータスランプ、右に名前（可読）。
-/// ホバーで明るく浮き＋ポインタカーソルにして「タップでターミナルへ飛べる」と一目で分かるようにする。
+/// ガラスボード上の1行＝1セッション。左にステータスランプ、右に名前（可読）。地は透明（ボードに任せる）。
+/// ホバーで明るく＋ポインタカーソルにして「タップでターミナルへ飛べる」と一目で分かるようにする。
 private struct PlateRow: View {
     let session: Session
     let theme: SkyTheme
@@ -46,7 +53,6 @@ private struct PlateRow: View {
         HStack(spacing: 8) {
             StatusDot(session: session)
             Text(session.label)
-                // モノスペースでターミナル／パスの文脈と整合させ、走査しやすくする。
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .foregroundStyle(textColor)
                 .lineLimit(1)
@@ -63,7 +69,7 @@ private struct PlateRow: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 30)
-        .background(plateBackground)
+        .background(rowBackground)
         // 確認待ちの行は左端のアクセントストライプで焦点化する。
         .overlay(alignment: .leading) {
             if session.needsAttention {
@@ -71,20 +77,16 @@ private struct PlateRow: View {
                     .fill(session.color)
                     .frame(width: 3)
                     .padding(.vertical, 5)
-                    .padding(.leading, 1)
+                    .padding(.leading, 3)
             }
         }
         .contentShape(Rectangle())
-        // ホバーでわずかに浮く＝「ガラスが持ち上がる」。押下で軽く沈む。
-        .scaleEffect(pressed ? 0.98 : (hovering ? 1.015 : 1))
-        .shadow(color: .black.opacity(hovering ? 0.28 : 0.14),
-                radius: hovering ? 3 : 1.5, x: 0, y: hovering ? 2 : 1)
+        .scaleEffect(pressed ? 0.99 : 1)
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
         .onTapGesture {
-            // 押した手応えを出してから前面化する。
             withAnimation(.easeOut(duration: 0.08)) { pressed = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                 withAnimation(.easeOut(duration: 0.12)) { pressed = false }
@@ -95,6 +97,14 @@ private struct PlateRow: View {
         .help(SessionTooltip.text(for: session))
     }
 
+    /// 行の地は透明（地はボードのガラスに任せる）。状態変化フラッシュとホバーだけ薄く光らせる。
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(session.color.opacity(flash * 0.25))
+            .overlay(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(hovering ? 0.16 : 0)))
+            .padding(.horizontal, 2)
+    }
+
     /// 名前テキスト色。景色に映えるよう、昼は濃色・夜は明色。
     private var textColor: Color {
         theme.isNight ? Color(red: 0.97, green: 0.96, blue: 0.92)
@@ -103,15 +113,6 @@ private struct PlateRow: View {
     /// 文字影（夜は濃く・昼は薄く）。背後の景色からの可読性を担保する。
     private var nameShadow: Color {
         theme.isNight ? .black.opacity(0.6) : .black.opacity(0.18)
-    }
-
-    /// 半透明の磨りガラス（背後の窓＝外の景色が透ける）。ホバーで明るく、状態変化で色味フラッシュ。
-    private var plateBackground: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(.white.opacity(GlassStyle.opacity))
-            .overlay(RoundedRectangle(cornerRadius: 6).fill(session.color.opacity(flash * 0.25)))
-            .overlay(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(hovering ? 0.14 : 0)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.55), lineWidth: 1))
     }
 
     /// ステータスが変わった行をステータス色で数回明滅させてから消す。
