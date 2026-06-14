@@ -36,88 +36,97 @@ struct WallView: View {
     }
 }
 
-/// ガラス案の背景：壁一面の大きな窓（外の景色）。格子の桟は無し（外枠のみ）。
-/// 景色はピクセルアート（太陽/月・雲・地平線の丘・夜の星）で、猫や床と同じ硬いドット質感に揃える。
-/// 一覧の高さに追従して景色が広がる。SkyTheme のみ依存＝静的（8Hz 非依存）。
+/// 一覧の背景＝壁一面の窓（外の景色）。枠なしの全面ガラスで、空〜地平線の丘をピクセルアートで描く。
+/// 行の高さに合わせたフラットなバンドで構成し、各セッション行が均一色の帯に乗る（＝境界が自然な区切りに）。
+/// 太陽/月・雲・星は文字の無い右側へ寄せて可読性を確保。一覧の高さに追従し、SkyTheme のみ依存＝静的（8Hz 非依存）。
 struct WindowWallBackground: View {
-    private static let scale: CGFloat = 2
+    /// 一覧の行ジオメトリ（SessionPlatesView と一致させて背景バンドを行に合わせる）。
+    static let rowH: CGFloat = 30
+    static let topPad: CGFloat = 6
+    static let botPad: CGFloat = 8
 
     var body: some View {
         Canvas { context, size in
-            let s = Self.scale
-            let theme = SkyTheme.current()
-            let W = size.width / s, H = size.height / s
+            drawBackground(context, size: size, theme: SkyTheme.current())
+        }
+    }
 
-            func fillRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ c: Color) {
-                context.fill(Path(CGRect(x: x * s, y: y * s, width: w * s, height: h * s)), with: .color(c))
+    /// 行の高さに合わせたフラットなバンドで背景を構成し、境界が「区切り」に見えるようにする。
+    /// 各セッション行が均一色の帯に乗るので可読性が上がる。太陽/月・雲・丘は文字の無い右側／境界へ寄せる。
+    private func drawBackground(_ context: GraphicsContext, size: CGSize, theme: SkyTheme) {
+        let W = size.width, H = size.height
+        func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ c: Color) {
+            context.fill(Path(CGRect(x: x, y: y, width: w, height: h)), with: .color(c))
+        }
+        func disc(_ cx: CGFloat, _ cy: CGFloat, _ r: CGFloat, _ c: Color) {
+            let ri = Int(r.rounded()); guard ri > 0 else { return }
+            for dy in -ri...ri {
+                let hw = (Double(ri * ri - dy * dy)).squareRoot().rounded()
+                rect(cx - CGFloat(hw), cy + CGFloat(dy), CGFloat(hw) * 2 + 1, 1, c)
             }
-            // ピクセル円（行ごとに矩形でラスタライズ＝硬いドット質感）。
-            func disc(_ cx: CGFloat, _ cy: CGFloat, _ r: CGFloat, _ c: Color) {
-                let ri = Int(r.rounded())
-                guard ri > 0 else { return }
-                for dy in -ri...ri {
-                    let hw = (Double(ri * ri - dy * dy)).squareRoot().rounded()
-                    fillRect(cx - CGFloat(hw), cy + CGFloat(dy), CGFloat(hw) * 2 + 1, 1, c)
-                }
-            }
-            // ステップ状の丘（下が広く上が狭い積み重ね）。
-            func bump(_ cx: CGFloat, _ baseY: CGFloat, _ w: CGFloat, _ h: CGFloat, _ c: Color) {
-                let rows: [CGFloat] = [1.0, 0.82, 0.6, 0.34]
-                let rh = h / CGFloat(rows.count)
-                for (i, fr) in rows.enumerated() {
-                    let ww = w * fr
-                    fillRect(cx - ww / 2, baseY - rh * CGFloat(i + 1), ww, rh + 0.6, c)
-                }
-            }
-            // ピクセル雲（横長＋上に小さな塊）。
-            func cloud(_ cx: CGFloat, _ cy: CGFloat, _ w: CGFloat) {
-                let c = Color.white.opacity(0.92)
-                fillRect(cx - w / 2, cy, w, 3, c)
-                fillRect(cx - w * 0.30, cy - 2, w * 0.55, 3, c)
-                fillRect(cx - w * 0.08, cy - 3.5, w * 0.30, 3, c)
-            }
+        }
+        func cloud(_ cx: CGFloat, _ cy: CGFloat, _ w: CGFloat) {
+            let c = Color.white.opacity(0.9)
+            rect(cx - w / 2, cy, w, 3, c); rect(cx - w * 0.30, cy - 2, w * 0.55, 3, c); rect(cx - w * 0.08, cy - 3.5, w * 0.30, 3, c)
+        }
 
-            // 枠なしの全面窓ガラス（開放的に外の景色がエッジまで広がる）。
-            let gx: CGFloat = 0, gy: CGFloat = 0, gw = W, gh = H
+        let rowH = Self.rowH, topPad = Self.topPad, botPad = Self.botPad
+        let usable = H - topPad - botPad
+        let n = max(1, Int((usable / rowH).rounded()))
+        func bandTop(_ i: Int) -> CGFloat { i == 0 ? 0 : topPad + CGFloat(i) * rowH }
+        func bandBot(_ i: Int) -> CGFloat { i == n - 1 ? H : topPad + CGFloat(i + 1) * rowH }
 
-            // 空（上→下の3帯）。
-            for i in 0..<3 {
-                fillRect(gx, gy + gh / 3 * CGFloat(i), gw, gh / 3 + 0.6, theme.sky[i])
-            }
-            func gp(_ rx: CGFloat, _ ry: CGFloat) -> CGPoint {
-                CGPoint(x: gx + rx * gw, y: gy + ry * gh)
-            }
+        // 空グラデの端点（昼/夜）。下（地平線）ほど淡い。各行はこのグラデを1点サンプルしたフラット色。
+        let top = theme.isNight ? (0.09, 0.12, 0.22) : (0.42, 0.68, 0.90)
+        let bot = theme.isNight ? (0.16, 0.22, 0.34) : (0.74, 0.86, 0.96)
+        let skyTop = Color(red: top.0, green: top.1, blue: top.2)
+        let hillRows = n >= 3 ? 1 : 0          // 3件以上なら最下行を丘（緑の均一帯）に
+        let skyRows = n - hillRows
+        let hill = theme.isNight ? Color(red: 0.17, green: 0.23, blue: 0.21) : Color(red: 0.50, green: 0.66, blue: 0.40)
 
-            if theme.isNight {
-                for st in Self.stars {
-                    let p = gp(st.x, st.y)
-                    fillRect(p.x.rounded(), p.y.rounded(), 1, 1, .white.opacity(st.z > 0.5 ? 0.95 : 0.6))
-                }
-                // 月（少し欠けさせる）。
-                let c = gp(0.80, 0.16), r = max(4, gw * 0.06)
-                disc(c.x, c.y, r, Color(red: 0.94, green: 0.94, blue: 0.87))
-                disc(c.x + r * 0.6, c.y - r * 0.3, r * 0.9, theme.sky[0])
+        for i in 0..<n {
+            let y0 = bandTop(i), y1 = bandBot(i)
+            let color: Color
+            if i >= skyRows {
+                color = hill
             } else {
-                let c = gp(0.80, 0.15), r = max(4, gw * 0.06)
-                disc(c.x, c.y, r, Color(red: 1.0, green: 0.90, blue: 0.50))   // 太陽
-                cloud(gp(0.26, 0.12).x, gp(0.26, 0.12).y, gw * 0.30)
-                cloud(gp(0.58, 0.22).x, gp(0.58, 0.22).y, gw * 0.24)
+                let t = skyRows <= 1 ? 0 : CGFloat(i) / CGFloat(skyRows - 1)
+                color = Color(red: top.0 + (bot.0 - top.0) * t,
+                              green: top.1 + (bot.1 - top.1) * t,
+                              blue: top.2 + (bot.2 - top.2) * t)
             }
-
-            // 地平線のかすみ（薄い帯）＋丘（奥→手前）。手前ほど明るい緑。
-            let haze = theme.isNight ? Color(red: 0.18, green: 0.22, blue: 0.30) : Color(red: 0.86, green: 0.90, blue: 0.84)
-            fillRect(gx, gy + gh * 0.70, gw, 3, haze)
-            let hillBack = theme.isNight ? Color(red: 0.18, green: 0.24, blue: 0.22) : Color(red: 0.42, green: 0.58, blue: 0.40)
-            let hillFront = theme.isNight ? Color(red: 0.13, green: 0.18, blue: 0.17) : Color(red: 0.50, green: 0.66, blue: 0.35)
-            let backTop = gy + gh * 0.80
-            fillRect(gx, backTop, gw, gy + gh - backTop, hillBack)
-            bump(gx + gw * 0.30, backTop, gw * 0.5, gh * 0.12, hillBack)
-            bump(gx + gw * 0.72, backTop, gw * 0.6, gh * 0.14, hillBack)
-            let frontTop = gy + gh * 0.88
-            fillRect(gx, frontTop, gw, gy + gh - frontTop, hillFront)
-            bump(gx + gw * 0.16, frontTop, gw * 0.45, gh * 0.12, hillFront)
-            bump(gx + gw * 0.55, frontTop, gw * 0.55, gh * 0.13, hillFront)
-            bump(gx + gw * 0.86, frontTop, gw * 0.40, gh * 0.10, hillFront)
+            rect(0, y0, W, y1 - y0 + 0.5, color)
+        }
+        // 行境界のかすかな仕切り線（背景が区切りに見えるよう締める）。
+        if n > 1 {
+            for i in 1..<n {
+                rect(0, topPad + CGFloat(i) * rowH - 0.5, W, 1, .black.opacity(theme.isNight ? 0.10 : 0.06))
+            }
+        }
+        // 空/丘の境界に小さな稜線（右寄り・左の文字に被らない）。
+        if hillRows > 0 {
+            let by = topPad + CGFloat(skyRows) * rowH
+            let crest = theme.isNight ? Color(red: 0.20, green: 0.27, blue: 0.24) : Color(red: 0.54, green: 0.70, blue: 0.42)
+            func crestBump(_ cx: CGFloat, _ w: CGFloat, _ h: CGFloat) {
+                let rows: [CGFloat] = [1.0, 0.6, 0.3]; let rh = h / CGFloat(rows.count)
+                for (k, fr) in rows.enumerated() { rect(cx - w * fr / 2, by - rh * CGFloat(k + 1), w * fr, rh + 0.6, crest) }
+            }
+            crestBump(W * 0.55, W * 0.5, 8); crestBump(W * 0.82, W * 0.4, 6)
+        }
+        // 星（夜・右寄りのみ。左の文字を避ける）。
+        if theme.isNight {
+            for st in Self.stars where st.x > 0.5 {
+                rect((st.x * W).rounded(), (topPad + st.y * usable * 0.5).rounded(), 1, 1, .white.opacity(st.z > 0.5 ? 0.9 : 0.55))
+            }
+        }
+        // 太陽/月＋雲は右上（文字は左寄せなので重ならない）。
+        let cx = W - 34, cy = max(18, topPad + rowH * 0.5)
+        if theme.isNight {
+            disc(cx, cy, 11, Color(red: 0.94, green: 0.94, blue: 0.87))
+            disc(cx + 7, cy - 3, 10, skyTop)                 // 三日月に欠けさせる
+        } else {
+            disc(cx, cy, 12, Color(red: 1.0, green: 0.90, blue: 0.50))
+            if n >= 2 { cloud(W * 0.70, topPad + rowH * 1.5, W * 0.20) }
         }
     }
 
