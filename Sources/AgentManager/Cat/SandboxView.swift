@@ -1,49 +1,153 @@
-import AppKit
 import SwiftUI
 
-/// 箱庭ビュー本体。論理シーンを 2x で描画する（倍率固定でピクセルパーフェクト維持）。
-/// ウィンドウのリサイズに追従して論理シーン自体が広がる（部屋が広くなる）。
-/// Canvas はヒットテスト無効にし、猫位置の透明ヒットレクト・左壁の掲示板を上に重ねる
-/// （空き領域はパネル背景へ抜けるので isMovableByWindowBackground の窓ドラッグが生きる。
-///   ScrollView を挟まないので ClickThroughHostingView の first-click も効く）。
-struct SandboxView: View {
-    @ObservedObject var store: SessionStore
-    @ObservedObject var simulation: CatSimulation
+/// アプリのトップビュー。「窓のある一室」を1つの世界として描き、その中にセッション一覧を取り込む。
+/// 上＝壁（窓帯＋壁に掛けた木プレートの一覧）、下＝床（猫がアンビエントに過ごす固定ストリップ）。
+/// 全要素が `SkyTheme`（昼夜パレット）を共有し、別レイヤー感を無くして地続きの部屋に見せる。
+///
+/// 8Hz で動くのは CatFloorView の Canvas だけ。一覧(SessionPlatesView)は store のみ・窓帯は
+/// SkyTheme のみに依存させ 8Hz の再描画に巻き込まない。RootView は plain `let` 保持で自身を
+/// 再評価させない（＝CPU を抑える要）。
+struct RootView: View {
+    let store: SessionStore
+    let simulation: CatSimulation
 
-    /// ホバー中の猫（ネームプレートのフル表示用。移動停止は simulation 側）。
-    @State private var hoveredID: String?
+    var body: some View {
+        VStack(spacing: 0) {
+            WallView(store: store)              // 窓帯＋木プレート一覧（高さは件数で伸縮）
+            CatFloorView(simulation: simulation) // 床＋猫（固定高）
+        }
+        .frame(width: 240)
+    }
+}
 
+/// ガラスのチューニング定数（磨りガラスの不透明度。視認性 vs 透け感の調整点）。
+enum GlassStyle {
+    static let opacity: Double = 0.20
+}
+
+/// 壁一面が窓（外の景色）。その前にガラス製の一覧パネルが浮く。
+/// `.background` で塗るので高さは中身（プレート）に追従し、無限に広がらない。
+struct WallView: View {
+    let store: SessionStore
+
+    var body: some View {
+        SessionPlatesView(store: store)
+            .background(WindowWallBackground())   // 壁一面の窓（外の景色）
+    }
+}
+
+/// ガラス案の背景：壁一面の大きな窓（外の景色）。格子の桟は無し（外枠のみ）。
+/// 景色はピクセルアート（太陽/月・雲・地平線の丘・夜の星）で、猫や床と同じ硬いドット質感に揃える。
+/// 一覧の高さに追従して景色が広がる。SkyTheme のみ依存＝静的（8Hz 非依存）。
+struct WindowWallBackground: View {
     private static let scale: CGFloat = 2
 
     var body: some View {
-        // 掲示板は store だけに依存させ、8Hz の snapshot 更新では再描画させない
-        // （子ビューに分離。layout は Equatable 値で渡すので変化時のみ再評価される）。
-        let layout = simulation.snapshot.layout
-        return ZStack(alignment: .topLeading) {
-            canvas
-                .allowsHitTesting(false)
-            BoardView(store: store, layout: layout, scale: Self.scale)
-            hitRects
-            if store.sessions.isEmpty {
-                Text("セッションなし")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .allowsHitTesting(false)
+        Canvas { context, size in
+            let s = Self.scale
+            let theme = SkyTheme.current()
+            let W = size.width / s, H = size.height / s
+
+            func fillRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ c: Color) {
+                context.fill(Path(CGRect(x: x * s, y: y * s, width: w * s, height: h * s)), with: .color(c))
             }
+            // ピクセル円（行ごとに矩形でラスタライズ＝硬いドット質感）。
+            func disc(_ cx: CGFloat, _ cy: CGFloat, _ r: CGFloat, _ c: Color) {
+                let ri = Int(r.rounded())
+                guard ri > 0 else { return }
+                for dy in -ri...ri {
+                    let hw = (Double(ri * ri - dy * dy)).squareRoot().rounded()
+                    fillRect(cx - CGFloat(hw), cy + CGFloat(dy), CGFloat(hw) * 2 + 1, 1, c)
+                }
+            }
+            // ステップ状の丘（下が広く上が狭い積み重ね）。
+            func bump(_ cx: CGFloat, _ baseY: CGFloat, _ w: CGFloat, _ h: CGFloat, _ c: Color) {
+                let rows: [CGFloat] = [1.0, 0.82, 0.6, 0.34]
+                let rh = h / CGFloat(rows.count)
+                for (i, fr) in rows.enumerated() {
+                    let ww = w * fr
+                    fillRect(cx - ww / 2, baseY - rh * CGFloat(i + 1), ww, rh + 0.6, c)
+                }
+            }
+            // ピクセル雲（横長＋上に小さな塊）。
+            func cloud(_ cx: CGFloat, _ cy: CGFloat, _ w: CGFloat) {
+                let c = Color.white.opacity(0.92)
+                fillRect(cx - w / 2, cy, w, 3, c)
+                fillRect(cx - w * 0.30, cy - 2, w * 0.55, 3, c)
+                fillRect(cx - w * 0.08, cy - 3.5, w * 0.30, 3, c)
+            }
+
+            let frameColor = Color(red: 0.43, green: 0.32, blue: 0.23)
+            fillRect(0, 0, W, H, frameColor)                 // 外枠
+            let gx: CGFloat = 3, gy: CGFloat = 3, gw = W - 6, gh = H - 6   // ガラス（窓の内側）
+
+            // 空（上→下の3帯）。
+            for i in 0..<3 {
+                fillRect(gx, gy + gh / 3 * CGFloat(i), gw, gh / 3 + 0.6, theme.sky[i])
+            }
+            func gp(_ rx: CGFloat, _ ry: CGFloat) -> CGPoint {
+                CGPoint(x: gx + rx * gw, y: gy + ry * gh)
+            }
+
+            if theme.isNight {
+                for st in Self.stars {
+                    let p = gp(st.x, st.y)
+                    fillRect(p.x.rounded(), p.y.rounded(), 1, 1, .white.opacity(st.z > 0.5 ? 0.95 : 0.6))
+                }
+                // 月（少し欠けさせる）。
+                let c = gp(0.80, 0.16), r = max(4, gw * 0.06)
+                disc(c.x, c.y, r, Color(red: 0.94, green: 0.94, blue: 0.87))
+                disc(c.x + r * 0.6, c.y - r * 0.3, r * 0.9, theme.sky[0])
+            } else {
+                let c = gp(0.80, 0.15), r = max(4, gw * 0.06)
+                disc(c.x, c.y, r, Color(red: 1.0, green: 0.90, blue: 0.50))   // 太陽
+                cloud(gp(0.26, 0.12).x, gp(0.26, 0.12).y, gw * 0.30)
+                cloud(gp(0.58, 0.22).x, gp(0.58, 0.22).y, gw * 0.24)
+            }
+
+            // 地平線のかすみ（薄い帯）＋丘（奥→手前）。手前ほど明るい緑。
+            let haze = theme.isNight ? Color(red: 0.18, green: 0.22, blue: 0.30) : Color(red: 0.86, green: 0.90, blue: 0.84)
+            fillRect(gx, gy + gh * 0.70, gw, 3, haze)
+            let hillBack = theme.isNight ? Color(red: 0.18, green: 0.24, blue: 0.22) : Color(red: 0.42, green: 0.58, blue: 0.40)
+            let hillFront = theme.isNight ? Color(red: 0.13, green: 0.18, blue: 0.17) : Color(red: 0.50, green: 0.66, blue: 0.35)
+            let backTop = gy + gh * 0.80
+            fillRect(gx, backTop, gw, gy + gh - backTop, hillBack)
+            bump(gx + gw * 0.30, backTop, gw * 0.5, gh * 0.12, hillBack)
+            bump(gx + gw * 0.72, backTop, gw * 0.6, gh * 0.14, hillBack)
+            let frontTop = gy + gh * 0.88
+            fillRect(gx, frontTop, gw, gy + gh - frontTop, hillFront)
+            bump(gx + gw * 0.16, frontTop, gw * 0.45, gh * 0.12, hillFront)
+            bump(gx + gw * 0.55, frontTop, gw * 0.55, gh * 0.13, hillFront)
+            bump(gx + gw * 0.86, frontTop, gw * 0.40, gh * 0.10, hillFront)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Canvas（壁 → 窓 → 床 → 小物 → 猫(y順) → ネームプレート → エモート）
+    private static let stars: [(x: CGFloat, y: CGFloat, z: CGFloat)] = [
+        (0.06, 0.06, 0.9), (0.16, 0.16, 0.4), (0.27, 0.04, 0.8), (0.37, 0.20, 0.5),
+        (0.46, 0.10, 0.9), (0.57, 0.18, 0.4), (0.66, 0.06, 0.7), (0.76, 0.22, 0.9),
+        (0.84, 0.12, 0.5), (0.92, 0.05, 0.8), (0.12, 0.30, 0.6), (0.50, 0.30, 0.5),
+        (0.70, 0.34, 0.7), (0.30, 0.40, 0.4), (0.88, 0.40, 0.8), (0.20, 0.52, 0.6),
+        (0.60, 0.54, 0.5), (0.40, 0.62, 0.7),
+    ]
+}
 
-    private var canvas: some View {
+/// 付随表示の「床と猫」。横長の固定ストリップで、セッションの賑わいをアンビエントに映す。
+/// 猫はセッション数ぶん増減するが名札なし・クリック遷移なし（遷移は一覧のプレートから）。
+/// 各猫の気分はそのセッションの状態＋経過時間で決まり、働くセッションが多いほど床が賑わう。
+struct CatFloorView: View {
+    @ObservedObject var simulation: CatSimulation
+
+    private static let scale: CGFloat = 2
+    private static let stripWidth: CGFloat = 240
+    private static let stripHeight: CGFloat = 88   // 論理 44 × 2x
+
+    var body: some View {
         Canvas { context, _ in
             let snap = simulation.snapshot
             let layout = snap.layout
             let theme = SkyTheme.current()
 
-            drawRoom(context, layout: layout, theme: theme, twinkle: snap.twinkle)
+            drawFloor(context, layout: layout, theme: theme)
 
             // 小物（猫より奥）。
             draw(context, image: SpriteRenderer.plantImage(),
@@ -57,7 +161,7 @@ struct SandboxView: View {
             draw(context, image: SpriteRenderer.yarnImage(frame: snap.yarnFrame),
                  topLeft: CGPoint(x: snap.yarnPos.x - 4, y: snap.yarnPos.y - 4), w: 8, h: 8)
 
-            // 猫（snapshot は y 昇順 = 奥→手前）。
+            // 猫（snapshot は y 昇順 = 奥→手前）。名札は付けない（匿名のアンビエント表示）。
             for cat in snap.cats {
                 let cx = cat.pos.x.rounded()
                 let cy = cat.pos.y.rounded()
@@ -66,14 +170,13 @@ struct SandboxView: View {
                     anim: cat.anim, frame: cat.frame, paletteIndex: cat.paletteIndex,
                     mirrored: cat.facingLeft, nightEyes: theme.isNight && awake)
                 draw(context, image: image, topLeft: CGPoint(x: cx - 8, y: cy - 8), w: 16, h: 16)
-                drawNameplate(context, cat: cat, cx: cx * Self.scale,
-                              topY: (cy + 8) * Self.scale + 1, theme: theme)
                 if let emote = cat.emote, cat.emoteVisible {
                     let img = SpriteRenderer.emoteImage(kind: emote, frame: cat.emoteFrame)
                     draw(context, image: img, topLeft: CGPoint(x: cx - 2, y: cy - 19), w: 10, h: 10)
                 }
             }
         }
+        .frame(width: Self.stripWidth, height: Self.stripHeight)
     }
 
     /// CGImage を論理座標（左上原点・論理px）で描く。ベイクは 4x プリスケール済みなので
@@ -88,54 +191,20 @@ struct SandboxView: View {
         context.draw(img, in: rect)
     }
 
-    /// 部屋の内装: 壁 → 大きな窓（空と星は窓の中）→ 巾木 → 木の床 → ラグ。
-    /// 配置は layout から導出され、リサイズで床・窓ガラスが伸びる。
-    private func drawRoom(_ context: GraphicsContext, layout: CatSimulation.RoomLayout,
-                          theme: SkyTheme, twinkle: Int) {
+    /// 床（全面）＋上端の巾木シェード＋板の継ぎ目＋ラグ。窓・壁は WallView 側にあるのでここでは描かない。
+    private func drawFloor(_ context: GraphicsContext, layout: CatSimulation.RoomLayout, theme: SkyTheme) {
         let s = Self.scale
         func fillRect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: Color) {
-            context.fill(Path(CGRect(x: x * s, y: y * s, width: w * s, height: h * s)),
-                         with: .color(color))
+            context.fill(Path(CGRect(x: x * s, y: y * s, width: w * s, height: h * s)), with: .color(color))
         }
-        func fill(_ r: CGRect, _ color: Color) {
-            context.fill(Path(CGRect(x: r.minX * s, y: r.minY * s,
-                                     width: r.width * s, height: r.height * s)),
-                         with: .color(color))
-        }
+        let W = layout.width, H = layout.height
 
-        let W = layout.width, wb = layout.wallBottom
-
-        // 壁と巾木。
-        fillRect(0, 0, W, wb, theme.wall)
-        fillRect(0, wb - 3, W, 3, theme.wallShade)
-
-        // 窓（枠2px・十字の桟）。空のフラット3横帯は窓ガラスの中にだけ見える。
-        let frameColor = Color(red: 0.43, green: 0.32, blue: 0.23)
-        let win = layout.windowRect
-        fill(win, frameColor)
-        let glass = win.insetBy(dx: 2, dy: 2)
-        for i in 0..<3 {
-            let bandH = glass.height / 3
-            fill(CGRect(x: glass.minX, y: glass.minY + bandH * CGFloat(i),
-                        width: glass.width, height: bandH), theme.sky[i])
-        }
-        if theme.isNight {
-            for (i, star) in Self.starRatios.enumerated() where (twinkle + i * 7) % 24 < 16 {
-                let bright = (twinkle + i * 5) % 24 < 8
-                let x = (glass.minX + star.x * glass.width).rounded()
-                let y = (glass.minY + star.y * glass.height).rounded()
-                fillRect(x, y, 1, 1, .white.opacity(bright ? 0.95 : 0.55))
-            }
-        }
-        fillRect(glass.midX - 1, win.minY, 2, win.height, frameColor)        // 縦桟
-        fillRect(win.minX, glass.midY - 1, win.width, 2, frameColor)         // 横桟
-        fillRect(win.minX - 2, win.maxY, win.width + 4, 2, frameColor)       // 窓台
-
-        // 木の床: 板の継ぎ目（横）と互い違いの短い縦継ぎ目。
-        fillRect(0, wb, W, layout.height - wb, theme.floor)
-        fillRect(0, wb, W, 2, theme.floorShade)
+        // 木の床（全面）。上端に巾木＝壁との境を示す濃いシェードを2段。
+        fillRect(0, 0, W, H, theme.floor)
+        fillRect(0, 0, W, 2, theme.wallShade)
+        fillRect(0, 2, W, 2, theme.floorShade)
         var plank = 0
-        for y in stride(from: wb + 8 as CGFloat, to: layout.height, by: 8) {
+        for y in stride(from: 8 as CGFloat, to: H, by: 8) {
             fillRect(0, y, W, 1, theme.floorSeam)
             let x1 = CGFloat((plank * 53 + 20) % Int(W))
             let x2 = CGFloat((plank * 53 + 100) % Int(W))
@@ -152,70 +221,9 @@ struct SandboxView: View {
         context.fill(Path(roundedRect: rug.insetBy(dx: s, dy: s), cornerRadius: 3 * s),
                      with: .color(Color(red: 0.56, green: 0.43, blue: 0.44)))
     }
-
-    private func drawNameplate(_ context: GraphicsContext, cat: CatSimulation.CatSnapshot,
-                               cx: CGFloat, topY: CGFloat, theme: SkyTheme) {
-        let full = cat.label
-        let name = (hoveredID == cat.id || full.count <= 10) ? full : String(full.prefix(9)) + "…"
-        let resolved = context.resolve(
-            Text(name)
-                .font(.system(size: 7, design: .monospaced))
-                .foregroundColor(.white.opacity(theme.isNight ? 0.7 : 0.92)))
-        let size = resolved.measure(in: CGSize(width: 300, height: 20))
-        // 左端に状態ドット（メニューバーと同じ配色）。エモートが消えた後も状態が一目で分かる。
-        let dot: CGFloat = 5
-        let bg = CGRect(x: (cx - (size.width + dot + 2) / 2 - 2).rounded(), y: topY,
-                        width: size.width + dot + 2 + 4, height: size.height + 1)
-        context.fill(Path(roundedRect: bg, cornerRadius: 2),
-                     with: .color(.black.opacity(theme.isNight ? 0.30 : 0.42)))
-        context.fill(
-            Path(ellipseIn: CGRect(x: bg.minX + 2, y: (bg.midY - dot / 2).rounded(),
-                                   width: dot, height: dot)),
-            with: .color(Session.color(for: cat.category)))
-        context.draw(resolved,
-                     at: CGPoint(x: bg.minX + 2 + dot + 2 + size.width / 2, y: bg.midY),
-                     anchor: .center)
-    }
-
-    /// 夜空の星（窓ガラス内の比率座標 0–1・固定シード）。窓が広がっても比率で追従する。
-    private static let starRatios: [CGPoint] = [
-        CGPoint(x: 0.08, y: 0.10), CGPoint(x: 0.20, y: 0.32), CGPoint(x: 0.34, y: 0.06),
-        CGPoint(x: 0.45, y: 0.58), CGPoint(x: 0.60, y: 0.18), CGPoint(x: 0.74, y: 0.66),
-        CGPoint(x: 0.84, y: 0.10), CGPoint(x: 0.93, y: 0.40), CGPoint(x: 0.14, y: 0.74),
-        CGPoint(x: 0.97, y: 0.84), CGPoint(x: 0.28, y: 0.52), CGPoint(x: 0.66, y: 0.86),
-        CGPoint(x: 0.40, y: 0.26), CGPoint(x: 0.88, y: 0.62),
-    ]
-
-    // MARK: - ヒットレクト（猫クリック→ターミナル前面化）
-
-    private var hitRects: some View {
-        // snapshot は y 昇順なので ZStack で後置＝手前の猫が hit-test に勝つ。
-        ForEach(simulation.snapshot.cats) { cat in
-            Color.clear
-                .frame(width: 36, height: 36)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if let session = store.sessions.first(where: { $0.id == cat.id }) {
-                        ITermFocus.focus(session: session)
-                    }
-                }
-                .onHover { hovering in
-                    hoveredID = hovering ? cat.id : nil
-                    simulation.setHovered(hovering ? cat.id : nil)
-                }
-                .help(tooltipForCat(cat))
-                .position(x: cat.pos.x.rounded() * Self.scale,
-                          y: cat.pos.y.rounded() * Self.scale)
-        }
-    }
-
-    private func tooltipForCat(_ cat: CatSimulation.CatSnapshot) -> String {
-        guard let session = store.sessions.first(where: { $0.id == cat.id }) else { return cat.label }
-        return SessionTooltip.text(for: session)
-    }
 }
 
-/// セッションのツールチップ文（猫のヒットレクトと掲示板の行で共有）。
+/// セッションのツールチップ文（一覧と共有しうる短文整形ユーティリティ）。
 enum SessionTooltip {
     static func text(for session: Session) -> String {
         var status = session.stateLabel
@@ -237,128 +245,15 @@ enum SessionTooltip {
     }
 }
 
-/// 左壁の掲示板（セッション一覧）。各行は「その子の色の猫アイコン ＋ 名前 ＋ ›」の
-/// ネームプレートで、クリックで対応するターミナルへ飛べる（ホバーで行が光り、カーソルが
-/// ポインタに変わるので "タップで遷移できる" と一目で分かる）。
-/// store と layout だけに依存させ、8Hz の snapshot 更新では再評価されない。
-struct BoardView: View {
-    @ObservedObject var store: SessionStore
-    let layout: CatSimulation.RoomLayout
-    let scale: CGFloat
-
-    /// ホバー中の行（ハイライト用）。
-    @State private var hoveredID: String?
-
-    /// 1行の高さと猫アイコンの表示サイズ（pt）。読みやすさ優先で前版(7pt)から拡大。
-    private static let rowH: CGFloat = 14
-    private static let iconPt: CGFloat = 14
-
-    var body: some View {
-        let theme = SkyTheme.current()
-        let rect = layout.boardRect
-        let s = scale
-        // 表示順（done→processing→waiting→idle）→ ラベル順で並べる。
-        let order = Session.StatusCategory.displayOrder
-        let sessions = store.sessions.sorted { a, b in
-            let ia = order.firstIndex(of: a.category) ?? order.count
-            let ib = order.firstIndex(of: b.category) ?? order.count
-            return ia != ib ? ia < ib : a.label < b.label
-        }
-        let pad: CGFloat = 3
-        let avail = rect.height * s - pad * 2
-        let capacity = max(0, Int(avail / Self.rowH))
-        // あふれる場合は最終行を「ほか +N」に使うので 1 行ぶん空ける。
-        let needsOverflow = sessions.count > capacity
-        let rowCap = needsOverflow ? max(0, capacity - 1) : capacity
-        let shown = Array(sessions.prefix(rowCap))
-        let overflow = sessions.count - shown.count
-
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(shown) { session in
-                row(session, theme: theme)
-            }
-            if overflow > 0 {
-                Text("ほか +\(overflow)")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.white.opacity(theme.isNight ? 0.5 : 0.72))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: Self.rowH - 3)
-                    .padding(.leading, 3)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 3)
-        .padding(.vertical, pad)
-        .frame(width: rect.width * s, height: rect.height * s, alignment: .topLeading)
-        .background(boardBackground(theme))
-        .position(x: rect.midX * s, y: rect.midY * s)
-    }
-
-    /// 木目調の掲示板の背景（夜は減光）。
-    private func boardBackground(_ theme: SkyTheme) -> some View {
-        let wood = Color(red: 0.36, green: 0.27, blue: 0.20)
-        return RoundedRectangle(cornerRadius: 4)
-            .fill(wood.opacity(theme.isNight ? 0.55 : 0.85))
-            .overlay(
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(Color(red: 0.22, green: 0.16, blue: 0.11).opacity(0.8), lineWidth: 1)
-            )
-    }
-
-    private func row(_ session: Session, theme: SkyTheme) -> some View {
-        let hovered = hoveredID == session.id
-        // session.id だけで決まる決定論マッピングなので、simulation に触れずに
-        // その子と同じ見た目の猫を描ける（＝8Hz 非依存を維持できる）。
-        let iconPx = CGFloat(SpriteRenderer.bakeScale * 16)
-        let cat = SpriteRenderer.catImage(
-            anim: .sit, frame: 0,
-            paletteIndex: SpriteRenderer.paletteIndex(for: session.id),
-            mirrored: false, nightEyes: false)
-        return HStack(spacing: 3) {
-            Image(decorative: cat, scale: iconPx / Self.iconPt)
-                .interpolation(.none)
-                .antialiased(false)
-            Text(session.label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(theme.isNight ? 0.78 : 0.96))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 1)
-            // › でタップ＝遷移を示唆。ホバー時は明るくする。
-            Image(systemName: "chevron.right")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white.opacity(hovered ? 0.92 : (theme.isNight ? 0.40 : 0.55)))
-        }
-        .padding(.horizontal, 2)
-        .frame(height: Self.rowH)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 3)
-                .fill(.white.opacity(hovered ? 0.14 : 0))
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { ITermFocus.focus(session: session) }
-        .onHover { inside in
-            if inside {
-                hoveredID = session.id
-                NSCursor.pointingHand.push()
-            } else {
-                if hoveredID == session.id { hoveredID = nil }
-                NSCursor.pop()
-            }
-        }
-        .help(SessionTooltip.text(for: session))
-    }
-}
-
-/// 時刻バケットで変わる昼夜テーマ。空（窓の中）はフラット横帯3色、壁と床も連動して明るさが変わる。
+/// 時刻バケットで変わる昼夜テーマ。窓の空（外の景色）・壁・床の色を一括で時刻連動させ、
+/// 全要素を地続きの一室として調和させる単一ソース。
 struct SkyTheme {
     let sky: [Color]        // 窓の中・上→下の3帯
     let wall: Color
     let wallShade: Color    // 巾木
     let floor: Color
     let floorShade: Color
-    let floorSeam: Color    // 床板の継ぎ目
+    let floorSeam: Color     // 床板の継ぎ目
     let isNight: Bool
 
     static func current(now: Date = Date()) -> SkyTheme {

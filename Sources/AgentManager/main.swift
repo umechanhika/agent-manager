@@ -40,11 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         simulation.onWaitingEdge = { MeowPlayer.shared.meow() }
         simulation.bind(to: store)
         self.simulation = simulation
-        let hosting = ClickThroughHostingView(rootView: SandboxView(store: store, simulation: simulation))
+        let hosting = ClickThroughHostingView(rootView: RootView(store: store, simulation: simulation))
         hosting.translatesAutoresizingMaskIntoConstraints = false
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
+            contentRect: NSRect(x: 0, y: 0, width: 240, height: 260),
             styleMask: [.nonactivatingPanel, .titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -66,13 +66,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
 
         panel.contentView = hosting
-        // 箱庭ビューはサイズ固定（320x220pt = 論理 160x110・倍率 2x）。リサイズは
-        // 「小さな箱庭」の価値を損なうため不可にし、位置だけ前回値を復元する。
+        // 幅は固定（RootView の 240pt）。高さはメインのセッション一覧の中身に追従して伸縮し、
+        // 下部の猫ストリップは固定高。辺ドラッグでのリサイズは不可（高さはセッション数だけが動かす）。
         panel.setFrameAutosaveName("AgentManagerPanel")
 
-        panel.setContentSize(NSSize(width: 320, height: 220))
-        // 前回の位置を復元（サイズは固定なので常に 320x220）。無ければ右上あたりに初期配置。
-        if !panel.setFrameUsingName("AgentManagerPanel") { placeTopRight(panel) }
+        // レイアウトを確定させてから中身に合うサイズへ（起動直後は fittingSize が 0 になりうる）。
+        hosting.layoutSubtreeIfNeeded()
+        var size = hosting.fittingSize
+        if size.width < 50 || size.height < 30 { size = NSSize(width: 240, height: 260) }
+        // 前回の位置だけ復元する。保存フレームにはサイズも含まれるが、サイズは中身追従に
+        // 戻したいので「保存フレームの左上」を採って、中身サイズで上端固定に置き直す。
+        let hadSaved = panel.setFrameUsingName("AgentManagerPanel")
+        let savedTopLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        panel.setContentSize(size)
+        if hadSaved {
+            panel.setFrameTopLeftPoint(savedTopLeft)
+        } else {
+            placeTopRight(panel)
+        }
 
         // 初期表示はしない（waiting 連動）。waiting があれば StatusBarController が表示側へ倒す。
         self.panel = panel

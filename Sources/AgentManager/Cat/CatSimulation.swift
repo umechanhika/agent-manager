@@ -15,13 +15,13 @@ final class CatSimulation: ObservableObject {
         let sleepAt: CGPoint
     }
 
-    /// 論理シーンサイズから全ジオメトリを導出する。現在はウィンドウ固定（160x110）で
-    /// 構築されるが、家具を壁際/領域にアンカーする構造は単一ソースとして残している。
-    /// スプライトは固定サイズ・倍率は常に 2x（ピクセルパーフェクト維持）。
+    /// 論理シーンサイズから全ジオメトリを導出する。窓・壁は上部の WallView 側に移したので、
+    /// ここは「床だけ」のストリップ（120x44）として構築される。家具は床の下端にアンカーする。
+    /// スプライトは固定サイズ・倍率は常に 2x。
     struct RoomLayout: Equatable {
         let width: CGFloat
         let height: CGFloat
-        let wallBottom: CGFloat        // 壁(と窓・掲示板) 0–wallBottom / 床 wallBottom–height
+        let wallBottom: CGFloat        // 床上端の巾木ライン（壁との境を示すだけ・床はほぼ全面）
         let minX, maxX, minY, maxY: CGFloat  // 猫の可動域
         let yarnHome: CGPoint
         let frontY: CGFloat            // waiting の猫が集まる前列中央帯
@@ -29,49 +29,41 @@ final class CatSimulation: ObservableObject {
         let sleepSpots: [SleepSpot]
         let towerTopLeft: CGPoint      // キャットタワー描画位置（左上）
         let plantTopLeft: CGPoint      // 観葉植物描画位置（左上）
-        let windowRect: CGRect         // 窓（枠の外形）
-        let boardRect: CGRect          // 左壁のセッション掲示板
         let rugRect: CGRect            // 床中央のラグ
 
         init(width: CGFloat, height: CGFloat) {
             self.width = width
             self.height = height
-            let wb = (height * 0.5).rounded()
-            self.wallBottom = wb
+            self.wallBottom = 4   // 床上端の巾木（猫はこの少し下から動く）
 
-            // 壁の造作: 左に掲示板、右寄りに窓。ヘッダー帯を撤去したので上端近く(y4)から始める。
-            self.boardRect = CGRect(x: 4, y: 4, width: 54, height: wb - 17)
-            // 窓は x62 から右端手前(width-28)まで。幅が広いほどガラスが伸びる。
-            let winX: CGFloat = 62
-            self.windowRect = CGRect(x: winX, y: 4, width: max(40, width - 28 - winX),
-                                     height: wb - 13)
-            // タワーは床に立つ（高さ可変でも床底にアンカー）。植物は掲示板の真下。
-            self.towerTopLeft = CGPoint(x: width - 26, y: height - 42)
-            self.plantTopLeft = CGPoint(x: 4, y: wb - 11)
+            // タワーは右床に立つ（底を床下端にアンカー）。植物は左下。
+            self.towerTopLeft = CGPoint(x: width - 26, y: max(0, height - 38))
+            self.plantTopLeft = CGPoint(x: 2, y: height - 17)
 
-            // 猫の可動域（床バンド内・右端はタワー占有域を避ける）。
+            // 猫の可動域（床ストリップ内・右端はタワー占有域を避ける）。
             self.minX = 10
-            self.maxX = width - 32
-            self.minY = wb + 3
-            self.maxY = height - 16
+            self.maxX = width - 30
+            self.minY = 13
+            self.maxY = height - 8
             self.frontCenterX = width / 2
-            self.frontY = height - 22
-            self.yarnHome = CGPoint(x: width / 2, y: wb + (height - wb) * 0.45)
-            self.rugRect = CGRect(x: width / 2 - 30, y: wb + 17, width: 60, height: 26)
+            self.frontY = height - 9
+            self.yarnHome = CGPoint(x: width / 2, y: height * 0.55)
+            self.rugRect = CGRect(x: width / 2 - 26, y: height * 0.50,
+                                  width: 52, height: max(8, height * 0.30))
 
             self.sleepSpots = [
-                SleepSpot(walkTo: CGPoint(x: 26, y: height - 24),
-                          sleepAt: CGPoint(x: 26, y: height - 26)),          // 青クッション(左床)
-                SleepSpot(walkTo: CGPoint(x: width - 46, y: height - 19),
-                          sleepAt: CGPoint(x: width - 46, y: height - 21)),  // 赤クッション(右床)
-                SleepSpot(walkTo: CGPoint(x: width - 14, y: height - 26),
-                          sleepAt: CGPoint(x: width - 16, y: height - 46)),  // タワー天板
+                SleepSpot(walkTo: CGPoint(x: 24, y: height - 8),
+                          sleepAt: CGPoint(x: 24, y: height - 10)),          // 青クッション(左床)
+                SleepSpot(walkTo: CGPoint(x: width - 44, y: height - 6),
+                          sleepAt: CGPoint(x: width - 44, y: height - 8)),   // 赤クッション(右床)
+                SleepSpot(walkTo: CGPoint(x: width - 14, y: height - 10),
+                          sleepAt: CGPoint(x: width - 16, y: height - 30)),  // タワー天板
             ]
         }
     }
 
-    /// 最小ウィンドウ（320x220pt）に対応する論理サイズ。
-    static let minLogical = CGSize(width: 160, height: 110)
+    /// 付随表示の「床」ストリップ（240x88pt = 論理 120x44・倍率 2x）に対応する論理サイズ。
+    static let minLogical = CGSize(width: 120, height: 44)
 
     // MARK: - スナップショット（描画用・イミュータブル）
 
@@ -91,12 +83,9 @@ final class CatSimulation: ObservableObject {
 
     struct Snapshot: Equatable {
         var cats: [CatSnapshot] = []     // y 昇順（奥→手前の描画順）
-        var layout = CatSimulation.defaultLayout   // 部屋の配置（リサイズで変化）
+        var layout = CatSimulation.defaultLayout   // 床の配置
         var yarnPos: CGPoint = CatSimulation.defaultLayout.yarnHome
         var yarnFrame: Int = 0
-        /// 星のまたたき用。8Hz だと毎 tick snapshot が変わって再描画され続けるので
-        /// 1/4 に量子化する（静止シーンでは publish 自体をスキップして CPU を抑える）。
-        var twinkle: Int = 0
     }
 
     /// 既定の論理シーン（最小ウィンドウ相当）。
@@ -136,6 +125,9 @@ final class CatSimulation: ObservableObject {
         var activity: Activity = .sitting(until: 0)
         var category: Session.StatusCategory = .idle
         var label = ""
+        /// 現在の状態に入ってからの経過秒（sync 時にセッションの state_since から更新）。
+        /// RunCat 風アンビエント表現の駆動信号: 完了して時間が経った猫はうとうと寝床へ向かう。
+        var stateElapsed: Double = 0
         var emote: EmoteKind?
         var emoteUntil: Int?     // nil = 永続（waiting の ❗ / 寝ている間の 💤）
         var bedIndex: Int?       // 占有中の寝床スポット（sticky）
@@ -210,14 +202,20 @@ final class CatSimulation: ObservableObject {
 
     private func sync(_ sessions: [Session]) {
         let ids = Set(sessions.map { $0.id })
+        let now = Date()
         for session in sessions {
+            // 状態に入ってからの経過秒（state_since 優先、無ければ updated_at）。
+            let elapsed = (session.stateSinceDate ?? session.updatedAtDate)
+                .map { max(0, now.timeIntervalSince($0)) } ?? 0
             if let cat = cats[session.id] {
                 cat.label = session.label
+                cat.stateElapsed = elapsed
                 if cat.category != session.category {
                     apply(category: session.category, to: cat)
                 }
             } else {
                 spawn(session)
+                cats[session.id]?.stateElapsed = elapsed
             }
         }
         // 消滅したセッションの猫は即削除（全終了時はアプリごと terminate するので退場アニメ不要）。
@@ -300,7 +298,7 @@ final class CatSimulation: ObservableObject {
         case .sitting(let until):
             if tickCount >= until {
                 if cat.category == .done {
-                    cat.activity = .grooming(until: tickCount + randInt(cat, 24...40))
+                    settleDone(cat, next: .grooming(until: tickCount + randInt(cat, 24...40)))
                 } else {
                     decideNext(cat)
                 }
@@ -308,7 +306,7 @@ final class CatSimulation: ObservableObject {
         case .grooming(let until):
             if tickCount >= until {
                 if cat.category == .done {
-                    cat.activity = .sitting(until: tickCount + randInt(cat, 24...40))
+                    settleDone(cat, next: .sitting(until: tickCount + randInt(cat, 24...40)))
                 } else {
                     decideNext(cat)
                 }
@@ -339,6 +337,18 @@ final class CatSimulation: ObservableObject {
             cat.activity = .sitting(until: tickCount + randInt(cat, 24...40))
         case .idle:
             headToBed(cat)
+        }
+    }
+
+    /// 完了状態の猫の小休止。応答完了から時間が経つと（RunCat 風に）うとうとして寝床へ向かう。
+    /// それまでは座る／毛づくろいを交互に続けて「満足げに寛いでいる」様子を出す。
+    private static let doneDozeSeconds: Double = 60
+
+    private func settleDone(_ cat: Cat, next: Activity) {
+        if cat.stateElapsed >= Self.doneDozeSeconds {
+            headToBed(cat)
+        } else {
+            cat.activity = next
         }
     }
 
@@ -478,8 +488,7 @@ final class CatSimulation: ObservableObject {
             cats: sorted.map { snap($0) },
             layout: layout,
             yarnPos: yarnPos,
-            yarnFrame: Int(yarnRoll / 4) % SpriteData.yarn.count,
-            twinkle: tickCount / 4
+            yarnFrame: Int(yarnRoll / 4) % SpriteData.yarn.count
         )
         // 静止シーン（全員 座る/寝る で 2fps）では大半の tick が無変化。
         // publish を省いて SwiftUI の再描画ごと止める。
